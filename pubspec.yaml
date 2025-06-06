@@ -1,0 +1,24 @@
+name: flutter_gaussian_splatter
+description: Flutter Gaussian Splatter
+version: 0.1.0
+
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_angle: ^0.2.2
+  vector_math: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lintervention: ^0.1.1
+  mocktail: ^1.0.3
+
+flutter:
+  assets:
+    - shaders/   

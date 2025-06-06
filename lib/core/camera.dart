@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Represents a camera for Gaussian Splatting rendering.
@@ -6,11 +7,12 @@ import 'package:vector_math/vector_math.dart';
 /// Contains both intrinsic parameters (focal lengths, image dimensions)
 /// and extrinsic parameters (position, rotation) needed for proper
 /// 3D scene rendering.
+@immutable
 class GaussianCamera {
   /// Creates a new [GaussianCamera] with the specified parameters.
   ///
   /// All parameters are required to ensure proper camera configuration.
-  GaussianCamera({
+  const GaussianCamera({
     required this.id,
     required this.width,
     required this.height,
@@ -49,7 +51,7 @@ class GaussianCamera {
       id: id,
       width: width.toInt(),
       height: height.toInt(),
-      position: position ?? Vector3(0, 0, -3.5),
+      position: position ?? Vector3(0, 0, -2),
       rotation: rotation ?? Matrix3.identity(),
       fx: fx,
       fy: fy,
@@ -120,6 +122,26 @@ class GaussianCamera {
     );
   }
 
+  /// Creates a new camera with updated pos and rot.
+  ///
+  /// Parameters:
+  /// - [position]: New image width in pixels
+  /// - [rotation]: New image height in pixels
+  GaussianCamera withUpdatedPosAndRot({
+    required Vector3 position,
+    required Matrix3 rotation,
+  }) {
+    return GaussianCamera(
+      id: id,
+      width: width,
+      height: height,
+      position: position,
+      rotation: rotation,
+      fx: fx,
+      fy: fy,
+    );
+  }
+
   /// Gets the current horizontal field of view in degrees.
   double get horizontalFovDegrees =>
       2 * math.atan((width / 2) / fx) * (180 / math.pi);
@@ -128,30 +150,35 @@ class GaussianCamera {
   double get verticalFovDegrees =>
       2 * math.atan((height / 2) / fy) * (180 / math.pi);
 
-  /// CopyWith method to create a new camera instance
-  GaussianCamera copyWith({
-  int? id,
-  int? width,
-  int? height,
-  Vector3? position,
-  Matrix3? rotation,
-  double? fx,
-  double? fy,
-}) {
-  return GaussianCamera(
-    id: id ?? this.id,
-    width: width ?? this.width,
-    height: height ?? this.height,
-    position: position ?? this.position,
-    rotation: rotation ?? this.rotation,
-    fx: fx ?? this.fx,
-    fy: fy ?? this.fy,
-  );
-}
-
-
   @override
   String toString() {
     return 'GaussianCamera(id: $id, position: $position)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! GaussianCamera) return false;
+    
+    return id == other.id &&
+        width == other.width &&
+        height == other.height &&
+        position == other.position &&
+        rotation == other.rotation &&
+        fx == other.fx &&
+        fy == other.fy;
+  }
+
+  @override
+  int get hashCode {
+    return Object.hash(
+      id,
+      width,
+      height,
+      position,
+      rotation,
+      fx,
+      fy,
+    );
   }
 }

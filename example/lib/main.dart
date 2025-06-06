@@ -13,12 +13,9 @@ class GaussianSplatterApp extends StatelessWidget {
     return MaterialApp(
       title: 'Gaussian Splatter Viewer',
       theme: ThemeData(
-        primarySwatch: Colors.blue,
         brightness: Brightness.dark,
-        visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
       home: const GaussianSplatterHomePage(),
-      debugShowCheckedModeBanner: false,
     );
   }
 }
@@ -32,16 +29,6 @@ class GaussianSplatterHomePage extends StatefulWidget {
 
 class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
   bool _showStats = true;
-
-  @override
-  void initState() {
-    super.initState();
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {

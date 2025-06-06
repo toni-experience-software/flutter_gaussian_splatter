@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -52,10 +54,8 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   // State management
   FlutterAngleTexture? texture;
   int textureId = _kInvalidTextureId;
-  bool didInit = false;
   bool isUpdating = false;
   late Ticker ticker;
-  late GaussianCamera _camera;
 
   // Camera controls
   bool _isInteracting = false;
@@ -66,6 +66,8 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   // Stats
   String _statsText = '';
 
+  bool get _didInit => texture != null;
+
   @override
   void initState() {
     super.initState();
@@ -73,20 +75,18 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
 
   @override
   void dispose() {
-    if (didInit) {
+    if (_didInit) {
       ticker.dispose();
       _renderer.dispose();
     }
     super.dispose();
   }
 
-  Future<void> initPlatformState(Size validSize) async {
-    if (didInit) return;
-    didInit = true;
+  Future<void> initPlatformState(Size validSize, double dpr) async {
+    if (_didInit) return;
 
     if (validSize.width <= 0 || validSize.height <= 0) {
       debugPrint('Invalid size for initialization: $validSize');
-      didInit = false;
       return;
     }
 
@@ -94,22 +94,20 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       'Initializing with size: ${validSize.width}x${validSize.height}',
     );
 
-    _camera = GaussianCamera.createDefault(
+    final camera = GaussianCamera.createDefault(
       width: validSize.width,
       height: validSize.height,
-      position: vm.Vector3(0, 0, -1),
-      rotation: vm.Matrix3.identity(),
     );
 
     // Initialize spherical coordinates from initial camera position
-    final pos = _camera.position;
+    final pos = camera.position;
     _orbitDistance = pos.length;
     _theta = math.atan2(pos.x, pos.z);
     _phi = math.acos(pos.y / _orbitDistance);
 
     try {
       await _renderer.initialize();
-      _renderer.setCamera(_camera);
+      _renderer.camera = camera;
 
       final vertexShaderCode = await flutter_services.rootBundle.loadString(
         'packages/flutter_gaussian_splatter/shaders/vertex.glsl',
@@ -151,7 +149,6 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       unawaited(ticker.start());
     } catch (e) {
       debugPrint('Failed to initialize renderer: $e');
-      didInit = false;
       rethrow;
     }
   }
@@ -200,13 +197,13 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
 
       setState(() {
         _statsText = '''
-FPS: ${stats.fps.toStringAsFixed(1)}
-Vertices: ${stats.vertexCount}
-Camera Position: (${pos.x.toStringAsFixed(2)}, ${pos.y.toStringAsFixed(2)}, ${pos.z.toStringAsFixed(2)})
-FOV: ${fovH.toStringAsFixed(1)}° × ${fovV.toStringAsFixed(1)}°
-Viewport: ${camera.width} × ${camera.height}
-Focal Length: fx=${camera.fx.toStringAsFixed(1)}, fy=${camera.fy.toStringAsFixed(1)}
-Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
+        FPS: ${stats.fps.toStringAsFixed(1)}
+        Vertices: ${stats.vertexCount}
+        Camera Position: (${pos.x.toStringAsFixed(2)}, ${pos.y.toStringAsFixed(2)}, ${pos.z.toStringAsFixed(2)})
+        FOV: ${fovH.toStringAsFixed(1)}° × ${fovV.toStringAsFixed(1)}°
+        Viewport: ${camera.width} × ${camera.height}
+        Focal Length: fx=${camera.fx.toStringAsFixed(1)}, fy=${camera.fy.toStringAsFixed(1)}
+        Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
       });
     }
   }
@@ -219,16 +216,19 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
     if (textureId < 0) return;
 
     if (details.scale != 1.0) {
-      final zoomDelta = (details.scale - 1.0) * _kZoomSensitivity;
+      final zoomDelta = (details.scale - 1.0) *
+          -_kZoomSensitivity ;
       _zoomCamera(zoomDelta);
     }
 
     if (details.focalPointDelta != Offset.zero) {
       final size = context.size ?? Size.zero;
-      final normalizedDx =
-          (_kPanSensitivity * details.focalPointDelta.dx) / size.width;
-      final normalizedDy =
-          (_kPanSensitivity * details.focalPointDelta.dy) / size.height;
+      final normalizedDx = (_kPanSensitivity * details.focalPointDelta.dx) /
+          size.width *
+          (Platform.isAndroid ? -1 : 1);
+      final normalizedDy = (_kPanSensitivity * details.focalPointDelta.dy) /
+          size.height *
+          (Platform.isAndroid ? -1 : -1);
       _orbitCamera(normalizedDx, normalizedDy);
     }
   }
@@ -253,8 +253,11 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
     final trueUp = forward.cross(right).normalized();
     final newRotation = vm.Matrix3.columns(right, trueUp, forward);
 
-    _camera = _camera.copyWith(position: newPosition, rotation: newRotation);
-    _renderer.setCamera(_camera);
+    final camera = _renderer.camera?.withUpdatedPosAndRot(
+      position: newPosition,
+      rotation: newRotation,
+    );
+    _renderer.camera = camera;
   }
 
   void _zoomCamera(double delta) {
@@ -273,8 +276,32 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
     final trueUp = forward.cross(right).normalized();
     final newRotation = vm.Matrix3.columns(right, trueUp, forward);
 
-    _camera = _camera.copyWith(position: newPosition, rotation: newRotation);
-    _renderer.setCamera(_camera);
+    final camera = _renderer.camera?.withUpdatedPosAndRot(
+      position: newPosition,
+      rotation: newRotation,
+    );
+    _renderer.camera = camera;
+  }
+
+  Future<void> _handleResize(Size newSize) async {
+    try {
+      final camera = _renderer.camera?.withUpdatedViewport(
+        newWidth: newSize.width,
+        newHeight: newSize.height,
+      );
+
+      if (camera == null) {
+        return;
+      }
+
+      await _renderer.resize(camera);
+
+      // Update texture reference after successful resize
+      texture = _renderer.targetTexture;
+      textureId = texture!.textureId;
+    } catch (e) {
+      log('Resize failed: $e');
+    }
   }
 
   Widget _buildStatsOverlay() {
@@ -292,7 +319,6 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
           style: const TextStyle(
             color: Colors.white,
             fontSize: 12,
-            fontFamily: 'monospace',
           ),
         ),
       ),
@@ -307,14 +333,13 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
           const CircularProgressIndicator(),
           const SizedBox(height: 16),
           const Text('Initializing Gaussian Splatter...'),
-          if (didInit) ...[
+          if (_didInit) ...[
             const SizedBox(height: 16),
             const Text('Texture creation failed. Try again?'),
             const SizedBox(height: 8),
             ElevatedButton(
               onPressed: () {
                 setState(() {
-                  didInit = false;
                   textureId = _kInvalidTextureId;
                 });
               },
@@ -330,18 +355,22 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final size = Size(constraints.maxWidth, constraints.maxHeight);
+        final currentSize = Size(constraints.maxWidth, constraints.maxHeight);
+        final dpr = MediaQuery.of(context).devicePixelRatio;
 
-        if (!didInit && size.width > 0 && size.height > 0) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && !didInit) {
-              initPlatformState(size);
-            }
-          });
+        if (!_didInit &&
+            currentSize.width > 0 &&
+            currentSize.height > 0 &&
+            mounted) {
+          initPlatformState(currentSize, dpr);
         }
 
         if (textureId < 0) {
           return _buildLoadingState();
+        }
+
+        if (_renderer.currentSize != currentSize) {
+          unawaited(_handleResize(currentSize));
         }
 
         return GestureDetector(
@@ -351,7 +380,7 @@ Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
           child: Stack(
             children: [
               Transform.scale(
-                scale: -1,
+                scale: Platform.isAndroid ? 1 : -1,
                 child: Texture(textureId: textureId),
               ),
               if (widget.showStats) _buildStatsOverlay(),

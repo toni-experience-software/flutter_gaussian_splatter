@@ -1,7 +1,6 @@
-// ignore_for_file: avoid_print
-
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_angle/flutter_angle.dart';
@@ -93,10 +92,7 @@ class TextureGaussianRenderer {
   bool _isRendering = false;
   DateTime _lastFrameTime = DateTime.timestamp();
   double _fps = 0;
-
-  // Viewport size (logical px)
-  double _width = 1;
-  double _height = 1;
+  bool _isResizing = false;
 
   // Shader sources (kept for context‑loss recovery)
   late final String _vertexShaderSource;
@@ -115,12 +111,25 @@ class TextureGaussianRenderer {
         lastFrameTime: _lastFrameTime,
       );
 
-  /// Currently active camera (immutable).
-  GaussianCamera? get camera => _camera;
-
   /// The texture that can be composed into UI using [FlutterAngleTexture]
   /// widget helpers.
   FlutterAngleTexture get targetTexture => _targetTexture;
+
+  /// Current viewport size that the renderer is configured for.
+  Size? get currentSize => _camera == null
+      ? null
+      : Size(_camera!.width.toDouble(), _camera!.height.toDouble());
+
+  /// The currently active [GaussianCamera], or `null` if not set.
+  GaussianCamera? get camera => _camera;
+
+  /// Sets the active [GaussianCamera] and updates matrices.
+  set camera(GaussianCamera? camera) {
+    if (camera == _camera) return;
+    _camera = camera;
+    _updateViewMatrix();
+    _updateProjectionMatrix();
+  }
 
   // Life‑cycle
 
@@ -144,8 +153,6 @@ class TextureGaussianRenderer {
   }) async {
     assert(width > 0 && height > 0, 'Viewport must be non‑zero');
 
-    _width = width;
-    _height = height;
     _vertexShaderSource = vertexShaderCode;
     _fragmentShaderSource = fragmentShaderCode;
 
@@ -153,9 +160,9 @@ class TextureGaussianRenderer {
       AngleOptions(
         width: width.toInt(),
         height: height.toInt(),
-        dpr: 1,
-        alpha: true, // RGBA8888 everywhere.
-        useSurfaceProducer: true, // Avoid legacy pbuffers.
+        dpr: 1, // TODO(jesper): support dpr?
+        alpha: true,
+        useSurfaceProducer: true,
         customRenderer: false,
       ),
     );
@@ -186,31 +193,6 @@ class TextureGaussianRenderer {
     _draw();
   }
 
-  /// Sets the active [GaussianCamera] and updates matrices.
-  void setCamera(GaussianCamera camera) {
-    _camera = camera;
-    _updateViewMatrix();
-    _updateProjectionMatrix();
-  }
-
-  /// Creates a reasonable default camera and makes it active. Returns the newly
-  /// created camera so that callers can further tweak it if desired.
-  GaussianCamera createDefaultCamera({
-    double horizontalFovDegrees = 70.0,
-    Vector3? position,
-    Matrix3? rotation,
-  }) {
-    final cam = GaussianCamera.createDefault(
-      width: _width,
-      height: _height,
-      horizontalFovDegrees: horizontalFovDegrees,
-      position: position,
-      rotation: rotation,
-    );
-    setCamera(cam);
-    return cam;
-  }
-
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
   /// Throws [ArgumentError] if the buffer length is not a multiple of 32.
   void setSplatData(Uint8List data) {
@@ -228,50 +210,97 @@ class TextureGaussianRenderer {
 
   /// Resizes the render target. If a camera is set, its intrinsics are updated
   /// to preserve the current field‑of‑view.
-  Future<void> resize(double width, double height) async {
-    if (width == _width && height == _height) return;
+  Future<bool> resize(
+    GaussianCamera camera,
+  ) async {
+    if (_isResizing) return false;
 
-    final previousTexture = _targetTexture;
-    final previousWidth = _width;
-    final previousHeight = _height;
+    // Check if resize is actually needed
+    if (_camera != null &&
+        camera.width == _camera!.width &&
+        camera.height == _camera!.height) {
+      return false;
+    }
 
-    _width = width;
-    _height = height;
-
-    // Preserve FOV.
-    _camera = _camera?.withUpdatedViewport(newWidth: width, newHeight: height);
+    _isResizing = true;
 
     try {
-      _targetTexture = await _angle.createTexture(
-        AngleOptions(
-          width: width.toInt(),
-          height: height.toInt(),
-          dpr: 1,
-          alpha: true,
-          useSurfaceProducer: true,
-          customRenderer: false,
-        ),
-      );
+      final previousTexture = _targetTexture;
+      final previousGl = _gl;
 
-      final newGl = _targetTexture.getContext();
-      final contextSurvived =
-          _gl == newGl && _program != null && _gl.isProgram(_program!) == true;
+      // Update camera first - this becomes our source of truth
+      _camera = camera;
 
-      _gl = newGl;
-      _angle.dispose([previousTexture]);
+      FlutterAngleTexture? newTexture;
 
-      if (contextSurvived) {
-        _updateProjectionMatrix();
-        _updateViewMatrix();
-      } else {
-        await _recoverFromContextLoss();
+      try {
+        newTexture = await _angle.createTexture(
+          AngleOptions(
+            width: _camera!.width,
+            height: _camera!.height,
+            dpr: 1, // TODO(jesper): support dpr?
+            alpha: true,
+            useSurfaceProducer: true,
+            customRenderer: false,
+          ),
+        );
+
+        final newGl = newTexture.getContext();
+        final contextSurvived = _gl == newGl &&
+            _program != null &&
+            _gl.isProgram(_program!) == true;
+
+        // Update to new context and texture
+        _gl = newGl;
+        _targetTexture = newTexture;
+
+        // Unbind any textures before disposal (Pattern 1 fix)
+        _gl.bindTexture(WebGL.TEXTURE_2D, null);
+
+        // Dispose the previous texture after successful creation
+        try {
+          _disposeGlResourcesForContext(previousGl);
+          _angle.dispose([previousTexture]);
+        } catch (e) {
+          debugPrint(
+            'Warning: error disposing previous texture during resize: $e',
+          );
+        }
+
+        if (contextSurvived) {
+          _updateProjectionMatrix();
+          _updateViewMatrix();
+        } else {
+          await _recoverFromContextLoss();
+        }
+
+        return true;
+      } catch (error, stack) {
+        // Clean up the new texture if it was created but we're rolling back
+        if (newTexture != null) {
+          try {
+            _angle.dispose([newTexture]);
+          } catch (e) {
+            debugPrint(
+              'Warning: error disposing new texture during rollback: $e',
+            );
+          }
+        }
+
+        // Only roll back if previousTexture is still valid
+        try {
+          _targetTexture = previousTexture;
+          _gl = previousTexture.getContext();
+        } catch (e) {
+          debugPrint('Warning: Cannot roll back to previous texture: $e');
+          rethrow;
+        }
+
+        debugPrint('Resize failed: $error\n$stack');
+        rethrow;
       }
-    } catch (error, stack) {
-      // Roll back so caller sees a consistent state.
-      _width = previousWidth;
-      _height = previousHeight;
-      debugPrint('Resize failed: $error\n$stack');
-      rethrow;
+    } finally {
+      _isResizing = false;
     }
   }
 
@@ -282,7 +311,7 @@ class TextureGaussianRenderer {
     _scratchDepthArray = null;
     _persistentIndexArray = null;
 
-    _disposeGlResources();
+    _disposeGlResourcesForContext(_gl);
 
     try {
       _angle.dispose([_targetTexture]);
@@ -557,8 +586,12 @@ class TextureGaussianRenderer {
   // Render helpers
 
   void _draw() {
+    if (camera == null || _splatBuffer == null || _splatCount <= 0) {
+      return; // Nothing to draw
+    }
+
     _gl
-      ..viewport(0, 0, _width.toInt(), _height.toInt())
+      ..viewport(0, 0, camera!.width, camera!.height)
       ..clearColor(0, 0, 0, 0)
       ..clear(WebGL.COLOR_BUFFER_BIT | WebGL.DEPTH_BUFFER_BIT)
       ..disable(WebGL.DEPTH_TEST)
@@ -582,7 +615,11 @@ class TextureGaussianRenderer {
       _gl.uniform2f(_uFocal!, _camera!.fx, _camera!.fy);
     }
     if (_uViewport != null) {
-      _gl.uniform2f(_uViewport!, _width, _height);
+      _gl.uniform2f(
+        _uViewport!,
+        camera!.width.toDouble(),
+        camera!.height.toDouble(),
+      );
     }
     if (_uTexture != null) {
       _gl.uniform1i(_uTexture!, 0);
@@ -609,6 +646,9 @@ class TextureGaussianRenderer {
 
     _gl.drawArraysInstanced(WebGL.TRIANGLE_FAN, 0, 4, _vertexCount);
     _gl.gl.glFlush();
+
+    // Unbind resources after drawing to prevent disposal issues
+    _gl.bindTexture(WebGL.TEXTURE_2D, null);
   }
 
   // Matrix helpers
@@ -625,8 +665,8 @@ class TextureGaussianRenderer {
     _projectionMatrix = _makeProjectionMatrix(
       _camera!.fx,
       _camera!.fy,
-      _width,
-      _height,
+      _camera!.width.toDouble(),
+      _camera!.height.toDouble(),
     );
   }
 
@@ -687,7 +727,7 @@ class TextureGaussianRenderer {
     _scratchDepthArray = null;
     _persistentIndexArray = null;
 
-    _disposeGlResources();
+    _disposeGlResourcesForContext(_gl);
     await _compileShaders();
     await _createBuffers();
 
@@ -698,11 +738,47 @@ class TextureGaussianRenderer {
     }
   }
 
-  void _disposeGlResources() {
-    _disposeProgram();
-    _disposeBuffers();
+  void _disposeGlResourcesForContext(RenderingContext gl) {
+    try {
+      gl
+        ..bindTexture(WebGL.TEXTURE_2D, null)
+        ..bindBuffer(WebGL.ARRAY_BUFFER, null)
+        ..useProgram(null);
+    } catch (_) {}
+
+    if (_program != null && gl.isProgram(_program!) == true) {
+      try {
+        gl.deleteProgram(_program!);
+      } catch (_) {}
+      _program = null;
+      _uProjection = null;
+      _uView = null;
+      _uFocal = null;
+      _uViewport = null;
+      _uTexture = null;
+      _aPosition = null;
+      _aIndex = null;
+      _uniformLocationCache.clear();
+    }
+
+    if (_vertexBuffer != null) {
+      try {
+        gl.deleteBuffer(_vertexBuffer!);
+      } catch (_) {}
+      _vertexBuffer = null;
+    }
+
+    if (_indexBuffer != null) {
+      try {
+        gl.deleteBuffer(_indexBuffer!);
+      } catch (_) {}
+      _indexBuffer = null;
+    }
+
     if (_texture != null) {
-      _gl.deleteTexture(_texture!);
+      try {
+        gl.deleteTexture(_texture!);
+      } catch (_) {}
       _texture = null;
     }
   }

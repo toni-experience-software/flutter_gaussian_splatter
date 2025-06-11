@@ -16,7 +16,8 @@ Flutter Gaussian Splatter showcases the use of Gaussian Splatting techniques wit
 ## Overview
 
 This project aims to provide a Flutter widget for rendering 3D scenes using Gaussian Splatting. It's a demonstration of what's possible when combining Flutter's ease of use with low-level graphics capabilities.
-![Toycar rendered with Flutter Gaussian Splatter](doc/toycar.png)
+
+![Demo of Flutter Gaussian Splatter](doc/demo.gif)
 
 ## Compatibility
 

@@ -83,6 +83,10 @@ Install via `flutter pub add`:
 flutter pub add flutter_gaussian_splatter
 ```
 
+## Acknowledgements
+
+This project is highly inspired by the work done on [antimatter15/splat](https://github.com/antimatter15/splat).
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

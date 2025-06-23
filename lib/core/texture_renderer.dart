@@ -518,10 +518,12 @@ class TextureGaussianRenderer {
       final r = uBuffer[_bytesPerSplat * original + 24 + 0];
       final g = uBuffer[_bytesPerSplat * original + 24 + 1];
       final b = uBuffer[_bytesPerSplat * original + 24 + 2];
-      final a = uBuffer[_bytesPerSplat * original + 24 + 3];
+      var a = uBuffer[_bytesPerSplat * original + 24 + 3];
 
-      // Use Mali GPU compatible packing to prevent NaN issues
-      final packedColour = _packAndSanitize(r, g, b, a);
+      // 1) keep exponent < 255 → no NaNs, no driver canonicalisation
+      if (a == 0xFF) a = 0xFE; // Clamp.
+
+      final packedColour = r | (g << 8) | (b << 16) | (a << 24);
       texData[p1Index + 3] = Float32List.view(
         (Uint32List(1)..[0] = packedColour).buffer,
       )[0];
@@ -788,19 +790,5 @@ class TextureGaussianRenderer {
       } catch (_) {}
       _texture = null;
     }
-  }
-
-  /// Sanitizes packed uint32 data to prevent NaN issues on Mali GPUs.
-  /// 
-  /// If the exponent bits are all 1s (0x7f800000), flips bit 22 to make
-  /// the exponent 254 instead of 255, preventing NaN/Inf interpretation.
-  /// This ensures compatibility across all GPU vendors including Mali.
-  int _packAndSanitize(int r, int g, int b, int a) {
-    int w = (a << 24) | (b << 16) | (g << 8) | r;
-    // If exponent == 255, flip bit 22 (makes exponent 254)
-    if ((w & 0x7f800000) == 0x7f800000) {
-      w ^= 0x00400000;
-    }
-    return w;
   }
 }

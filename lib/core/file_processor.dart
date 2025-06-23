@@ -10,19 +10,11 @@ import 'dart:typed_data';
 /// the Gaussian splat renderer. The processor also handles importance-based
 /// sorting to optimize rendering performance.
 class FileProcessorImpl {
-  /// Output format constants
-  static const int _positionFloats = 3; // x, y, z
-  static const int _scaleFloats = 3; // scale_x, scale_y, scale_z
-  static const int _colorBytes = 4; // r, g, b, a
-  static const int _rotationBytes = 4; // quaternion as bytes
-  
   /// Total number of bytes per vertex in the output format.
-  /// 
-  /// Consists of: position (12 bytes) + scale (12 bytes) + color (4 bytes) 
-  /// + rotation (4 bytes) = 32 bytes
-  static const int outputRowLength = (_positionFloats + _scaleFloats) * 4 +
-      _colorBytes +
-      _rotationBytes;
+  ///
+  /// Format breakdown: 12 bytes position + 12 bytes scale + 4 bytes color + 4 bytes rotation + 48 bytes SH coefficients = 80 bytes used
+  /// Buffer size is 128 bytes (48 bytes unused - could be optimized)
+  static const int outputRowLength = 128;
 
   /// Spherical harmonics coefficient for color conversion
   static const double _shC0 = 0.28209479177387814;
@@ -144,7 +136,7 @@ class FileProcessorImpl {
         requiredProps.where((prop) => !offsets.containsKey(prop)).toList();
 
     if (missingProps.isNotEmpty) {
-       log(
+      log(
         'PLY file missing some properties: ${missingProps.join(', ')}. '
         'Using default values for missing properties.',
         name: 'FileProcessor',
@@ -299,6 +291,16 @@ class FileProcessorImpl {
       offsets,
       types,
     );
+    
+    // Spherical harmonics coefficients (32-79 bytes)
+    _writeSphericalHarmonics(
+      inputData,
+      inputRowStart,
+      outputView,
+      outputRowStart,
+      offsets,
+      types,
+    );
   }
 
   /// Writes position data (x, y, z).
@@ -411,6 +413,7 @@ class FileProcessorImpl {
           ) ??
           0.0;
 
+      // Base color: Use original working encoding (for display colors)
       rByte = ((0.5 + _shC0 * fDc0) * 255).clamp(0, 255).round();
       gByte = ((0.5 + _shC0 * fDc1) * 255).clamp(0, 255).round();
       bByte = ((0.5 + _shC0 * fDc2) * 255).clamp(0, 255).round();
@@ -523,6 +526,80 @@ class FileProcessorImpl {
         ..setUint8(outputRowStart + 29, 0)
         ..setUint8(outputRowStart + 30, 0)
         ..setUint8(outputRowStart + 31, 0);
+    }
+  }
+
+  /// Writes 45 spherical harmonics "rest" coefficients (f_rest_0 to f_rest_44).
+  ///
+  /// Packs coefficients into three 16-byte blocks (R, G, B channels) for a total of 48 bytes.
+  /// Each block contains 15 coefficients plus 1 padding byte for alignment.
+  /// Uses color-major indexing: R0-R14, G0-G14, B0-B14.
+  void _writeSphericalHarmonics(
+    ByteData inData,
+    int inRowStart,
+    ByteData outView,
+    int outRowStart,
+    Map<String, int> offs,
+    Map<String, String> types,
+  ) {
+    const coeffProps = [
+      // Spherical harmonics "rest" coefficients (f_rest_0 to f_rest_44)
+      // Excludes f_dc_0, f_dc_1, f_dc_2 which are encoded in base color
+      'f_rest_0', 'f_rest_1', 'f_rest_2', 'f_rest_3',
+      'f_rest_4', 'f_rest_5', 'f_rest_6', 'f_rest_7',
+      'f_rest_8', 'f_rest_9', 'f_rest_10', 'f_rest_11',
+      'f_rest_12', 'f_rest_13', 'f_rest_14', 'f_rest_15',
+      'f_rest_16', 'f_rest_17', 'f_rest_18', 'f_rest_19',
+      'f_rest_20', 'f_rest_21', 'f_rest_22', 'f_rest_23',
+      'f_rest_24', 'f_rest_25', 'f_rest_26', 'f_rest_27',
+      'f_rest_28', 'f_rest_29', 'f_rest_30', 'f_rest_31',
+      'f_rest_32', 'f_rest_33', 'f_rest_34', 'f_rest_35',
+      'f_rest_36', 'f_rest_37', 'f_rest_38', 'f_rest_39',
+      'f_rest_40', 'f_rest_41', 'f_rest_42', 'f_rest_43',
+      'f_rest_44',
+    ];
+
+    // Pack coefficients into 48-byte buffer (3 blocks × 16 bytes each)
+    final byteBuffer = Uint8List(48);
+
+    // Pack like reference: group by color channel, then by coefficient
+    // r0.x,r0.y,r0.z,r0.w = R components of SH1,SH2,SH3,SH4
+    // g0.x,g0.y,g0.z,g0.w = G components of SH1,SH2,SH3,SH4
+    // b0.x,b0.y,b0.z,b0.w = B components of SH1,SH2,SH3,SH4
+
+// -------------------------------------------------------------------
+// Pack 45 "rest" SH coefficients (15 per colour) into 3×16-byte blocks
+// -------------------------------------------------------------------
+// -------------------------------------------------------------
+// Pack 45 “rest” SH coefficients into 3 × 16-byte blocks
+// -------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Pack 45 SH “rest” coefficients into three 16-byte blocks (R, G, B)
+// ---------------------------------------------------------------------------
+    for (var colorIdx = 0; colorIdx < 3; ++colorIdx) {
+      // 0:R  1:G  2:B
+      for (var coeffIdx = 0; coeffIdx < 15; ++coeffIdx) {
+        // SH coefficients 1-15 (excluding DC components f_dc_0,1,2)
+        // Use color-major indexing for proper channel grouping
+        final propIdx = colorIdx * 15 + coeffIdx; // 0-14, 15-29, 30-44
+
+        final raw = _readPropertySafe(
+                inData, inRowStart, offs, types, coeffProps[propIdx]) ??
+            0.0;
+
+        final byteIdx = colorIdx * 16 + coeffIdx; // Block offset + coefficient index
+        byteBuffer[byteIdx] = _encodeShCoeff(raw);
+      }
+
+      // Padding byte for 16-byte alignment per color block
+      byteBuffer[colorIdx * 16 + 15] = 0;
+    }
+
+    // Write twelve uint32 words (48 bytes / 4 = 12 words) starting at offset 32
+    final uintView = Uint32List.view(byteBuffer.buffer);
+    for (var i = 0; i < 12; ++i) {
+      final destOffset = outRowStart + 32 + i * 4;
+      outView.setUint32(destOffset, uintView[i], Endian.little);
     }
   }
 
@@ -644,5 +721,15 @@ class FileProcessorImpl {
       default:
         return 0;
     }
+  }
+
+  /// Encodes a single SH coefficient to 8-bit unsigned format.
+  ///
+  /// Clamps coefficient to range [-4,4] and maps to [0,255].
+  /// Formula: (clamp(c, -4, 4) + 4) * 255 / 8
+  int _encodeShCoeff(double c) {
+    // Clamp to reference range [-4,4] and quantise to 8-bit unsigned.
+    final byte = (c.clamp(-4.0, 4.0) + 4.0) * 255.0 / 8.0;
+    return byte.round(); // 0‥255
   }
 }

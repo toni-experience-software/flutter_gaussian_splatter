@@ -9,7 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_gaussian_splatter: any
+  flutter_gaussian_splatter:
+    path: ../../flutter_gaussian_splatter
 
 dev_dependencies:
   flutter_test:

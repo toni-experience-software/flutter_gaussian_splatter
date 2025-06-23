@@ -27,3 +27,4 @@ pubspec.lock
 pubspec_overrides.yaml
 .flutter-plugins
 .flutter-plugins-dependencies
+shaders/reference_vertex.glsl

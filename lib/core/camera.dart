@@ -24,17 +24,14 @@ class GaussianCamera {
 
   /// Creates a default camera with reasonable FOV-based parameters.
   ///
-  /// This factory constructor provides sensible defaults for most use cases:
-  /// - Square pixels (fx = fy)
-  /// - Camera positioned at (0, 0, -3.5) looking down -Z axis
-  /// - Identity rotation matrix
+  /// This factory constructor provides defaults,
   ///
   /// Parameters:
   /// - [width]: Image width in pixels
   /// - [height]: Image height in pixels
   /// - [horizontalFovDegrees]: Horizontal field of view in deg (default: 45°)
-  /// - [position]: Camera position in world space (default: (0, 0, -3.5))
-  /// - [rotation]: Camera rotation matrix (default: identity)
+  /// - [position]: Camera position in world space (default: calculated from orbit)
+  /// - [rotation]: Camera rotation matrix (default: calculated from orbit)
   /// - [id]: Camera identifier (default: 0)
   factory GaussianCamera.createDefault({
     required double width,
@@ -47,12 +44,39 @@ class GaussianCamera {
     final fx = _focalPixels(width, horizontalFovDegrees);
     final fy = fx; // Square pixels - keep them equal
 
+    // If position/rotation not provided, calculate using orbit camera logic
+    Vector3 finalPosition;
+    Matrix3 finalRotation;
+    
+    if (position != null && rotation != null) {
+      finalPosition = position;
+      finalRotation = rotation;
+    } else {
+      // Use same initial values as widget: distance=5, theta=0, phi=π/2
+      const orbitDistance = 2.0;
+      const double theta = 0;
+      const phi = math.pi / 2.0;
+      
+      // Calculate position using spherical coordinates (matching widget)
+      final x = orbitDistance * math.sin(phi) * math.sin(theta);
+      final y = orbitDistance * math.cos(phi);
+      final z = orbitDistance * math.sin(phi) * math.cos(theta);
+      finalPosition = Vector3(x, y, z);
+      
+      // Calculate rotation using same logic as widget's _orbitCamera
+      final forward = (-finalPosition).normalized();
+      final up = Vector3(0, -1, 0);  // Match widget's up vector
+      final right = up.cross(forward).normalized();
+      final trueUp = forward.cross(right).normalized();
+      finalRotation = Matrix3.columns(right, trueUp, forward);
+    }
+
     return GaussianCamera(
       id: id,
       width: width.toInt(),
       height: height.toInt(),
-      position: position ?? Vector3(0, 0, -2),
-      rotation: rotation ?? Matrix3.identity(),
+      position: finalPosition,
+      rotation: finalRotation,
       fx: fx,
       fy: fy,
     );

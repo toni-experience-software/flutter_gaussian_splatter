@@ -141,6 +141,7 @@ class TextureGaussianRenderer {
 
     _depthSorter = depth.DepthSorterImpl(onSortComplete: _onDepthSortComplete);
     await _depthSorter.initialize();
+    
   }
 
   /// Creates a texture and compiles the shaders.  Safe to call multiple times –
@@ -458,12 +459,13 @@ class TextureGaussianRenderer {
 
   // Splat texture upload
 
-  static const int _bytesPerSplat = 32;
+  static const int _bytesPerSplat = 128;
+  static const int _floatsPerSplat = _bytesPerSplat ~/ 4; // 32
   static const int _texWidth = 2048; // JS reference uses 1024*2.
 
   void _uploadSplatTexture(Uint8List buffer) {
     final splatCount = buffer.length ~/ _bytesPerSplat;
-    final texHeight = ((2 * splatCount) / _texWidth).ceil();
+    final texHeight = ((8 * splatCount) / _texWidth).ceil();
 
     final fBuffer = Float32List.view(buffer.buffer);
     final uBuffer = Uint8List.view(buffer.buffer);
@@ -477,27 +479,27 @@ class TextureGaussianRenderer {
     final texData = Float32List(_texWidth * texHeight * 4);
 
     for (var original = 0; original < splatCount; original++) {
-      final x = (original & 0x3ff) << 1; // lower 10 bits → column, doubled
-      final y = original >> 10; // higher bits → row
+      final x = (original & 0xff) << 3; // lower 8 bits → column, times 8
+      final y = original >> 8; // higher bits → row
 
       final p0Index = (y * _texWidth + x) * 4;
       final p1Index = p0Index + 4; // (x + 1, y)
 
       // Position (P0)
-      texData[p0Index + 0] = fBuffer[8 * original + 0];
-      texData[p0Index + 1] = fBuffer[8 * original + 1];
-      texData[p0Index + 2] = fBuffer[8 * original + 2];
+      texData[p0Index + 0] = fBuffer[_floatsPerSplat * original + 0];
+      texData[p0Index + 1] = fBuffer[_floatsPerSplat * original + 1];
+      texData[p0Index + 2] = fBuffer[_floatsPerSplat * original + 2];
       texData[p0Index + 3] = 0; // Unused alpha per spec
 
       // Covariance & colour (P1)
-      final scaleX = fBuffer[8 * original + 3];
-      final scaleY = fBuffer[8 * original + 4];
-      final scaleZ = fBuffer[8 * original + 5];
+      final scaleX = fBuffer[_floatsPerSplat * original + 3];
+      final scaleY = fBuffer[_floatsPerSplat * original + 4];
+      final scaleZ = fBuffer[_floatsPerSplat * original + 5];
 
-      final qx = uBuffer[32 * original + 28 + 0];
-      final qy = uBuffer[32 * original + 28 + 1];
-      final qz = uBuffer[32 * original + 28 + 2];
-      final qw = uBuffer[32 * original + 28 + 3];
+      final qx = uBuffer[_bytesPerSplat * original + 28 + 0];
+      final qy = uBuffer[_bytesPerSplat * original + 28 + 1];
+      final qz = uBuffer[_bytesPerSplat * original + 28 + 2];
+      final qw = uBuffer[_bytesPerSplat * original + 28 + 3];
 
       final packedCov = packedCovariance(
         scaleX: scaleX,
@@ -513,18 +515,23 @@ class TextureGaussianRenderer {
       texData[p1Index + 1] = intBitsToFloat(packedCov[1]);
       texData[p1Index + 2] = intBitsToFloat(packedCov[2]);
 
-      final r = uBuffer[32 * original + 24 + 0];
-      final g = uBuffer[32 * original + 24 + 1];
-      final b = uBuffer[32 * original + 24 + 2];
-      var a = uBuffer[32 * original + 24 + 3];
+      final r = uBuffer[_bytesPerSplat * original + 24 + 0];
+      final g = uBuffer[_bytesPerSplat * original + 24 + 1];
+      final b = uBuffer[_bytesPerSplat * original + 24 + 2];
+      final a = uBuffer[_bytesPerSplat * original + 24 + 3];
 
-      // 1) keep exponent < 255 → no NaNs, no driver canonicalisation
-      if (a == 0xFF) a = 0xFE; // Clamp.
-
-      final packedColour = r | (g << 8) | (b << 16) | (a << 24);
+      // Use Mali GPU compatible packing to prevent NaN issues
+      final packedColour = _packAndSanitize(r, g, b, a);
       texData[p1Index + 3] = Float32List.view(
         (Uint32List(1)..[0] = packedColour).buffer,
       )[0];
+
+      // Copy P2-P5 (SH coefficients) - 24 floats = 96 bytes
+      final baseByte = _bytesPerSplat * original;
+      final dstStart = (y * _texWidth + x + 2) * 4; // P2 first texel
+      const byteCount = 96; // P2-P5 (24 floats)
+      texData.setRange(dstStart, dstStart + byteCount ~/ 4,
+          fBuffer, baseByte ~/ 4 + 8,); // skip the first 8 floats (= P0+P1)
     }
 
     if (_texture != null) {
@@ -685,7 +692,7 @@ class TextureGaussianRenderer {
     const zfar = 200.0;
 
     final fovX = (2 * fx) / width;
-    final fovY = -(2 * fy) / height;
+    final fovY = (2 * fy) / height;
     const farNearRatio = zfar / (zfar - znear);
     const farNearProduct = -(zfar * znear) / (zfar - znear);
 
@@ -781,5 +788,19 @@ class TextureGaussianRenderer {
       } catch (_) {}
       _texture = null;
     }
+  }
+
+  /// Sanitizes packed uint32 data to prevent NaN issues on Mali GPUs.
+  /// 
+  /// If the exponent bits are all 1s (0x7f800000), flips bit 22 to make
+  /// the exponent 254 instead of 255, preventing NaN/Inf interpretation.
+  /// This ensures compatibility across all GPU vendors including Mali.
+  int _packAndSanitize(int r, int g, int b, int a) {
+    int w = (a << 24) | (b << 16) | (g << 8) | r;
+    // If exponent == 255, flip bit 22 (makes exponent 254)
+    if ((w & 0x7f800000) == 0x7f800000) {
+      w ^= 0x00400000;
+    }
+    return w;
   }
 }

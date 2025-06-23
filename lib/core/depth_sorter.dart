@@ -287,6 +287,12 @@ SortResult _performSort(_SortRequest request) {
     );
   }
 
+  final fBuf = Float32List.view(request.buffer.buffer);
+
+  // ----- NEW: floats per splat -----
+  final floatsPerSplat =
+      request.buffer.lengthInBytes ~/ request.vertexCount ~/ 4;
+
   // Initialize or reuse arrays
   if (_isolateTmpArray == null || _isolateTmpArray!.length < n) {
     _isolateTmpArray = Int32List(n);
@@ -305,7 +311,6 @@ SortResult _performSort(_SortRequest request) {
     _isolateOutputArray = Uint32List(n);
   }
 
-  final fBuf = Float32List.view(request.buffer.buffer);
   final tmp = _isolateTmpArray!;
 
   var minD = 0x7fffffff;
@@ -318,9 +323,10 @@ SortResult _performSort(_SortRequest request) {
 
   // Calculate depth values
   for (var i = 0; i < n; ++i) {
-    final d = ((vp2 * fBuf[8 * i + 0] +
-                vp6 * fBuf[8 * i + 1] +
-                vp10 * fBuf[8 * i + 2]) *
+    final base = floatsPerSplat * i;
+    final d = ((vp2 * fBuf[base + 0] +
+                vp6 * fBuf[base + 1] +
+                vp10 * fBuf[base + 2]) *
             4096)
         .toInt();
     tmp[i] = d;

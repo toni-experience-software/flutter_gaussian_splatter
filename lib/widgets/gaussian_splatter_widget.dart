@@ -105,6 +105,7 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     _theta = math.atan2(pos.x, pos.z);
     _phi = math.acos(pos.y / _orbitDistance);
 
+
     try {
       await _renderer.initialize();
       _renderer.camera = camera;
@@ -224,11 +225,9 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     if (details.focalPointDelta != Offset.zero) {
       final size = context.size ?? Size.zero;
       final normalizedDx = (_kPanSensitivity * details.focalPointDelta.dx) /
-          size.width *
-          (Platform.isAndroid ? -1 : 1);
+          size.width ;
       final normalizedDy = (_kPanSensitivity * details.focalPointDelta.dy) /
-          size.height *
-          (Platform.isAndroid ? -1 : -1);
+          size.height ;
       _orbitCamera(normalizedDx, normalizedDy);
     }
   }
@@ -248,7 +247,7 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     final newPosition = vm.Vector3(newX, newY, newZ);
 
     final forward = (-newPosition).normalized();
-    final up = vm.Vector3(0, 1, 0);
+    final up = vm.Vector3(0, -1, 0);  // Flip Y-axis to match coordinate system
     final right = up.cross(forward).normalized();
     final trueUp = forward.cross(right).normalized();
     final newRotation = vm.Matrix3.columns(right, trueUp, forward);
@@ -271,7 +270,7 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     final newPosition = vm.Vector3(newX, newY, newZ);
 
     final forward = (-newPosition).normalized();
-    final up = vm.Vector3(0, 1, 0);
+    final up = vm.Vector3(0, -1, 0);  // Flip Y-axis to match coordinate system
     final right = up.cross(forward).normalized();
     final trueUp = forward.cross(right).normalized();
     final newRotation = vm.Matrix3.columns(right, trueUp, forward);

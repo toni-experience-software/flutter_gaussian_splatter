@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Calculate packed covariance entries for a single Gaussian splat.
@@ -41,12 +42,12 @@ List<int> packedCovariance({
   // Calculate covariance: Σ = M · M^T and multiply by 4 (spec requirement)
   final sigma = (M * M.transposed()) as Matrix3;
 
-  final s00 = 4 * sigma.entry(0, 0);
-  final s01 = 4 * sigma.entry(0, 1);
-  final s02 = 4 * sigma.entry(0, 2);
-  final s11 = 4 * sigma.entry(1, 1);
-  final s12 = 4 * sigma.entry(1, 2);
-  final s22 = 4 * sigma.entry(2, 2);
+  final s00 = GsConst.covarianceScale * sigma.entry(0, 0);
+  final s01 = GsConst.covarianceScale * sigma.entry(0, 1);
+  final s02 = GsConst.covarianceScale * sigma.entry(0, 2);
+  final s11 = GsConst.covarianceScale * sigma.entry(1, 1);
+  final s12 = GsConst.covarianceScale * sigma.entry(1, 2);
+  final s22 = GsConst.covarianceScale * sigma.entry(2, 2);
 
   // Pack two half-floats per 32-bit word
   return [
@@ -74,10 +75,10 @@ Quaternion _decodeQuaternion(
   int q2Byte,
   int q3Byte,
 ) {
-  final w = (q0Byte - 128) / 128.0;
-  final x = (q1Byte - 128) / 128.0;
-  final y = (q2Byte - 128) / 128.0;
-  final z = (q3Byte - 128) / 128.0;
+  final w = (q0Byte - GsConst.quatByteMid) / GsConst.quatScale.toDouble();
+  final x = (q1Byte - GsConst.quatByteMid) / GsConst.quatScale.toDouble();
+  final y = (q2Byte - GsConst.quatByteMid) / GsConst.quatScale.toDouble();
+  final z = (q3Byte - GsConst.quatByteMid) / GsConst.quatScale.toDouble();
 
   final len = math.sqrt(w * w + x * x + y * y + z * z);
   if (len == 0) return Quaternion.identity();

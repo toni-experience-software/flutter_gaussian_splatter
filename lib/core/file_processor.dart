@@ -3,6 +3,8 @@ import 'dart:developer';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter_gaussian_splatter/core/constants.dart';
+
 /// Processes PLY files containing Gaussian splat data.
 ///
 /// This class handles parsing PLY file headers, extracting vertex properties,
@@ -10,17 +12,6 @@ import 'dart:typed_data';
 /// the Gaussian splat renderer. The processor also handles importance-based
 /// sorting to optimize rendering performance.
 class FileProcessorImpl {
-  /// Total number of bytes per vertex in the output format.
-  ///
-  /// Format breakdown: 12 bytes position + 12 bytes scale + 4 bytes color + 4 bytes rotation + 48 bytes SH coefficients = 80 bytes used
-  /// Buffer size is 128 bytes (48 bytes unused - could be optimized)
-  static const int outputRowLength = 128;
-
-  /// Spherical harmonics coefficient for color conversion
-  static const double _shC0 = 0.28209479177387814;
-
-  /// Default scale value for missing scale properties
-  static const double _defaultScale = 0.01;
 
   /// Checks if the provided data represents a valid PLY file.
   ///
@@ -218,13 +209,13 @@ class FileProcessorImpl {
     Map<String, String> types,
     List<int> sortedIndices,
   ) {
-    final outputBuffer = Uint8List(vertexCount * outputRowLength);
+    final outputBuffer = Uint8List(vertexCount * GsConst.outputRowLength);
     final outputView = ByteData.view(outputBuffer.buffer);
 
     for (var j = 0; j < vertexCount; j++) {
       final i = sortedIndices[j];
       final inputRowStart = i * rowSize;
-      final outputRowStart = j * outputRowLength;
+      final outputRowStart = j * GsConst.outputRowLength;
 
       try {
         _writeVertexData(
@@ -366,9 +357,9 @@ class FileProcessorImpl {
         ..setFloat32(outputRowStart + 20, math.exp(scale2), Endian.little);
     } else {
       outputView
-        ..setFloat32(outputRowStart + 12, _defaultScale, Endian.little)
-        ..setFloat32(outputRowStart + 16, _defaultScale, Endian.little)
-        ..setFloat32(outputRowStart + 20, _defaultScale, Endian.little);
+        ..setFloat32(outputRowStart + 12, GsConst.defaultScale, Endian.little)
+        ..setFloat32(outputRowStart + 16, GsConst.defaultScale, Endian.little)
+        ..setFloat32(outputRowStart + 20, GsConst.defaultScale, Endian.little);
     }
   }
 
@@ -414,14 +405,14 @@ class FileProcessorImpl {
           0.0;
 
       // Base color: Use original working encoding (for display colors)
-      rByte = ((0.5 + _shC0 * fDc0) * 255).clamp(0, 255).round();
-      gByte = ((0.5 + _shC0 * fDc1) * 255).clamp(0, 255).round();
-      bByte = ((0.5 + _shC0 * fDc2) * 255).clamp(0, 255).round();
+      rByte = ((GsConst.baseColourBias + GsConst.shC0 * fDc0) * GsConst.byteMax).clamp(0, GsConst.byteMax).round();
+      gByte = ((GsConst.baseColourBias + GsConst.shC0 * fDc1) * GsConst.byteMax).clamp(0, GsConst.byteMax).round();
+      bByte = ((GsConst.baseColourBias + GsConst.shC0 * fDc2) * GsConst.byteMax).clamp(0, GsConst.byteMax).round();
     } else {
       // Direct RGB values
       final red =
           _readPropertySafe(inputData, inputRowStart, offsets, types, 'red') ??
-              128.0;
+              GsConst.quatByteMid.toDouble();
       final green = _readPropertySafe(
             inputData,
             inputRowStart,
@@ -429,14 +420,14 @@ class FileProcessorImpl {
             types,
             'green',
           ) ??
-          128.0;
+          GsConst.quatByteMid.toDouble();
       final blue =
           _readPropertySafe(inputData, inputRowStart, offsets, types, 'blue') ??
-              128.0;
+              GsConst.quatByteMid.toDouble();
 
-      rByte = red.clamp(0, 255).round();
-      gByte = green.clamp(0, 255).round();
-      bByte = blue.clamp(0, 255).round();
+      rByte = red.clamp(0, GsConst.byteMax).round();
+      gByte = green.clamp(0, GsConst.byteMax).round();
+      bByte = blue.clamp(0, GsConst.byteMax).round();
     }
 
     // Opacity handling
@@ -449,9 +440,9 @@ class FileProcessorImpl {
             'opacity',
           ) ??
           0.0;
-      aByte = ((1.0 / (1.0 + math.exp(-opacity))) * 255).clamp(0, 255).round();
+      aByte = ((1.0 / (1.0 + math.exp(-opacity))) * GsConst.byteMax).clamp(0, GsConst.byteMax).round();
     } else {
-      aByte = 255;
+      aByte = GsConst.byteMax;
     }
 
     outputView
@@ -509,10 +500,10 @@ class FileProcessorImpl {
           math.sqrt(rot0 * rot0 + rot1 * rot1 + rot2 * rot2 + rot3 * rot3);
 
       // Convert to byte representation
-      final q0Byte = ((rot0 / qlen) * 128 + 128).clamp(0, 255).round();
-      final q1Byte = ((rot1 / qlen) * 128 + 128).clamp(0, 255).round();
-      final q2Byte = ((rot2 / qlen) * 128 + 128).clamp(0, 255).round();
-      final q3Byte = ((rot3 / qlen) * 128 + 128).clamp(0, 255).round();
+      final q0Byte = ((rot0 / qlen) * GsConst.quatScale + GsConst.quatByteMid).clamp(0, GsConst.byteMax).round();
+      final q1Byte = ((rot1 / qlen) * GsConst.quatScale + GsConst.quatByteMid).clamp(0, GsConst.byteMax).round();
+      final q2Byte = ((rot2 / qlen) * GsConst.quatScale + GsConst.quatByteMid).clamp(0, GsConst.byteMax).round();
+      final q3Byte = ((rot3 / qlen) * GsConst.quatScale + GsConst.quatByteMid).clamp(0, GsConst.byteMax).round();
 
       outputView
         ..setUint8(outputRowStart + 28, q0Byte)
@@ -522,7 +513,7 @@ class FileProcessorImpl {
     } else {
       // Default quaternion values
       outputView
-        ..setUint8(outputRowStart + 28, 255)
+        ..setUint8(outputRowStart + 28, GsConst.byteMax)
         ..setUint8(outputRowStart + 29, 0)
         ..setUint8(outputRowStart + 30, 0)
         ..setUint8(outputRowStart + 31, 0);
@@ -622,9 +613,9 @@ class FileProcessorImpl {
       ..setFloat32(outputRowStart + 0, 0, Endian.little) // x
       ..setFloat32(outputRowStart + 4, 0, Endian.little) // y
       ..setFloat32(outputRowStart + 8, 0, Endian.little) // z
-      ..setFloat32(outputRowStart + 12, _defaultScale, Endian.little) // scale_x
-      ..setFloat32(outputRowStart + 16, _defaultScale, Endian.little) // scale_y
-      ..setFloat32(outputRowStart + 20, _defaultScale, Endian.little) // scale_z
+      ..setFloat32(outputRowStart + 12, GsConst.defaultScale, Endian.little) // scale_x
+      ..setFloat32(outputRowStart + 16, GsConst.defaultScale, Endian.little) // scale_y
+      ..setFloat32(outputRowStart + 20, GsConst.defaultScale, Endian.little) // scale_z
       ..setUint8(outputRowStart + 24, 128) // r
       ..setUint8(outputRowStart + 25, 128) // g
       ..setUint8(outputRowStart + 26, 128) // b
@@ -742,7 +733,7 @@ class FileProcessorImpl {
   /// Formula: (clamp(c, -4, 4) + 4) * 255 / 8
   int _encodeShCoeff(double c) {
     // Clamp to reference range [-4,4] and quantise to 8-bit unsigned.
-    final byte = (c.clamp(-4.0, 4.0) + 4.0) * 255.0 / 8.0;
+    final byte = (c.clamp(GsConst.shMin, GsConst.shMax) - GsConst.shMin) * GsConst.byteMax / GsConst.shSpan;
     return byte.round(); // 0‥255
   }
 }

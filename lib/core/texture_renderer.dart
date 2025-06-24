@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
+import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:flutter_gaussian_splatter/core/covariance_calculator.dart';
 import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
 import 'package:vector_math/vector_math.dart';
@@ -197,7 +198,7 @@ class TextureGaussianRenderer {
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
   /// Throws [ArgumentError] if the buffer length is not a multiple of 32.
   void setSplatData(Uint8List data) {
-    if (data.length % _bytesPerSplat != 0) {
+    if (data.length % GsConst.bytesPerSplat != 0) {
       throw ArgumentError.value(
         data.length,
         'data.length',
@@ -205,7 +206,7 @@ class TextureGaussianRenderer {
       );
     }
     _splatBuffer = data;
-    _splatCount = data.length ~/ _bytesPerSplat;
+    _splatCount = data.length ~/ GsConst.bytesPerSplat;
     _uploadSplatTexture(data);
   }
 
@@ -459,16 +460,13 @@ class TextureGaussianRenderer {
 
   // Splat texture upload
 
-  static const int _bytesPerSplat = 128;
-  static const int _floatsPerSplat = _bytesPerSplat ~/ 4; // 32
-  static const int _texWidth = 2048; // JS reference uses 1024*2.
-
   void _uploadSplatTexture(Uint8List buffer) {
-    final splatCount = buffer.length ~/ _bytesPerSplat;
-    final texHeight = ((8 * splatCount) / _texWidth).ceil();
+    final splatCount = buffer.length ~/ GsConst.bytesPerSplat;
+    final texHeight = ((8 * splatCount) / GsConst.texWidth).ceil();
 
     final fBuffer = Float32List.view(buffer.buffer);
     final uBuffer = Uint8List.view(buffer.buffer);
+    final floatsPerSplat = GsConst.bytesPerSplat ~/ 4; // 32
 
     // Send to depth‑sorter immediately (no throttling) so first frame is crisp.
     if (_camera != null) {
@@ -476,30 +474,30 @@ class TextureGaussianRenderer {
       _depthSorter.runSort(vp, buffer, splatCount);
     }
 
-    final texData = Float32List(_texWidth * texHeight * 4);
+    final texData = Float32List(GsConst.texWidth * texHeight * 4);
 
     for (var original = 0; original < splatCount; original++) {
       final x = (original & 0xff) << 3; // lower 8 bits → column, times 8
       final y = original >> 8; // higher bits → row
 
-      final p0Index = (y * _texWidth + x) * 4;
+      final p0Index = (y * GsConst.texWidth + x) * 4;
       final p1Index = p0Index + 4; // (x + 1, y)
 
       // Position (P0)
-      texData[p0Index + 0] = fBuffer[_floatsPerSplat * original + 0];
-      texData[p0Index + 1] = fBuffer[_floatsPerSplat * original + 1];
-      texData[p0Index + 2] = fBuffer[_floatsPerSplat * original + 2];
+      texData[p0Index + 0] = fBuffer[floatsPerSplat * original + 0];
+      texData[p0Index + 1] = fBuffer[floatsPerSplat * original + 1];
+      texData[p0Index + 2] = fBuffer[floatsPerSplat * original + 2];
       texData[p0Index + 3] = 0; // Unused alpha per spec
 
       // Covariance & colour (P1)
-      final scaleX = fBuffer[_floatsPerSplat * original + 3];
-      final scaleY = fBuffer[_floatsPerSplat * original + 4];
-      final scaleZ = fBuffer[_floatsPerSplat * original + 5];
+      final scaleX = fBuffer[floatsPerSplat * original + 3];
+      final scaleY = fBuffer[floatsPerSplat * original + 4];
+      final scaleZ = fBuffer[floatsPerSplat * original + 5];
 
-      final qx = uBuffer[_bytesPerSplat * original + 28 + 0];
-      final qy = uBuffer[_bytesPerSplat * original + 28 + 1];
-      final qz = uBuffer[_bytesPerSplat * original + 28 + 2];
-      final qw = uBuffer[_bytesPerSplat * original + 28 + 3];
+      final qx = uBuffer[GsConst.bytesPerSplat * original + 28 + 0];
+      final qy = uBuffer[GsConst.bytesPerSplat * original + 28 + 1];
+      final qz = uBuffer[GsConst.bytesPerSplat * original + 28 + 2];
+      final qw = uBuffer[GsConst.bytesPerSplat * original + 28 + 3];
 
       final packedCov = packedCovariance(
         scaleX: scaleX,
@@ -515,10 +513,10 @@ class TextureGaussianRenderer {
       texData[p1Index + 1] = intBitsToFloat(packedCov[1]);
       texData[p1Index + 2] = intBitsToFloat(packedCov[2]);
 
-      final r = uBuffer[_bytesPerSplat * original + 24 + 0];
-      final g = uBuffer[_bytesPerSplat * original + 24 + 1];
-      final b = uBuffer[_bytesPerSplat * original + 24 + 2];
-      final a = uBuffer[_bytesPerSplat * original + 24 + 3];
+      final r = uBuffer[GsConst.bytesPerSplat * original + 24 + 0];
+      final g = uBuffer[GsConst.bytesPerSplat * original + 24 + 1];
+      final b = uBuffer[GsConst.bytesPerSplat * original + 24 + 2];
+      final a = uBuffer[GsConst.bytesPerSplat * original + 24 + 3];
 
       final packedColour = r | (g << 8) | (b << 16) | (a << 24);
       texData[p1Index + 3] = Float32List.view(
@@ -526,8 +524,8 @@ class TextureGaussianRenderer {
       )[0];
 
       // Copy P2-P5 (SH coefficients) - 24 floats = 96 bytes
-      final baseByte = _bytesPerSplat * original;
-      final dstStart = (y * _texWidth + x + 2) * 4; // P2 first texel
+      final baseByte = GsConst.bytesPerSplat * original;
+      final dstStart = (y * GsConst.texWidth + x + 2) * 4; // P2 first texel
       const byteCount = 96; // P2-P5 (24 floats)
       texData.setRange(dstStart, dstStart + byteCount ~/ 4,
           fBuffer, baseByte ~/ 4 + 8,); // skip the first 8 floats (= P0+P1)
@@ -556,7 +554,7 @@ class TextureGaussianRenderer {
         WebGL.TEXTURE_2D,
         0,
         WebGL.RGBA32F,
-        _texWidth,
+        GsConst.texWidth,
         texHeight,
         0,
         WebGL.RGBA,

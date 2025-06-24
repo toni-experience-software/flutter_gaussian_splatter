@@ -518,10 +518,7 @@ class TextureGaussianRenderer {
       final r = uBuffer[_bytesPerSplat * original + 24 + 0];
       final g = uBuffer[_bytesPerSplat * original + 24 + 1];
       final b = uBuffer[_bytesPerSplat * original + 24 + 2];
-      var a = uBuffer[_bytesPerSplat * original + 24 + 3];
-
-      // 1) keep exponent < 255 → no NaNs, no driver canonicalisation
-      if (a == 0xFF) a = 0xFE; // Clamp.
+      final a = uBuffer[_bytesPerSplat * original + 24 + 3];
 
       final packedColour = r | (g << 8) | (b << 16) | (a << 24);
       texData[p1Index + 3] = Float32List.view(

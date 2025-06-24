@@ -35,16 +35,8 @@ vec2 unpackHalf2x16_from_uint(uint val) {
     return vec2(unpackHalf(val & 0xFFFFu), unpackHalf(val >> 16u));
 }
 
-// Reverses Mali GPU NaN-avoidance encoding by restoring original bit pattern
-// XORs back the exponent bit that was flipped during packing to prevent NaNs
-uint unsanitize(uint bits) {
-    return bits ^ ((bits & 0x7f800000u) == 0x7f800000u ? 0x00400000u : 0u);
-}
-
 // Unpacks 4 signed bytes from uint32 to vec4 range [-4, 4)
-// Now includes Mali GPU compatibility via unsanitize step
 vec4 unpack8888s(in uint bits) {
-    bits = unsanitize(bits);  // Restore original bit pattern
     return vec4((uvec4(bits) >> uvec4(0u, 8u, 16u, 24u)) & 0xffu) * (8.0f / 255.0f) - 4.0f;
 }
 
@@ -269,20 +261,19 @@ void main() {
     vec3 base_color_linear = base_color_srgb.rgb;
 
     // Compute view direction for spherical harmonics evaluation
-    // Optimized: view-space = camera-space, no need for additional normalization
     vec4 centerView = view * vec4(worldPos, 1.0f);
     vec3 center_view = centerView.xyz / centerView.w;
-    vec3 dir_sh = normalize(center_view);
+    mat4 center_modelView = view;
+    vec3 dir_sh = normalize(center_view * mat3(center_modelView));
 
     // Evaluate spherical harmonics lighting
     vec3 sh_lighting = evalSH_reference(dir_sh, sh);
 
-    // Combine base color with SH lighting and guard against infinity
-    vec3 sum_linear = base_color_linear;// + sh_lighting;
-    sum_linear = clamp(sum_linear, vec3(0.0f), vec3(1e3)); // Paranoid NaN/Inf guard
+    // Combine base color with SH lighting
+    vec3 sum_linear = base_color_linear + sh_lighting;
 
     // Prepare final output color
-    vec3 final_srgb_rgb = prepareOutputFromGamma(sum_linear);
+    vec3 final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0f)));
 
     // Apply alpha-based corner clipping
     vec2 corner_uv = position;

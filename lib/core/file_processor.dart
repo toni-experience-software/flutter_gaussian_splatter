@@ -291,7 +291,7 @@ class FileProcessorImpl {
       offsets,
       types,
     );
-    
+
     // Spherical harmonics coefficients (32-79 bytes)
     _writeSphericalHarmonics(
       inputData,
@@ -587,12 +587,25 @@ class FileProcessorImpl {
                 inData, inRowStart, offs, types, coeffProps[propIdx]) ??
             0.0;
 
-        final byteIdx = colorIdx * 16 + coeffIdx; // Block offset + coefficient index
+        final byteIdx =
+            colorIdx * 16 + coeffIdx; // Block offset + coefficient index
         byteBuffer[byteIdx] = _encodeShCoeff(raw);
       }
 
       // Padding byte for 16-byte alignment per color block
       byteBuffer[colorIdx * 16 + 15] = 0;
+
+
+      for (var word = 0; word < 12; ++word) {
+        // 12 words = 48 bytes
+        final base = word * 4; // little-endian!
+        final b3 = byteBuffer[base + 3]; // MS-byte (sign | exp[7:1])
+
+        //   exponent = 255  ⟺  lower 7 bits of b3 are all 1‘s
+        if ((b3 & 0x7F) == 0x7F) {
+          byteBuffer[base + 3] = b3 & 0x7E; // drop one exponent bit → 254
+        }
+      }
     }
 
     // Write twelve uint32 words (48 bytes / 4 = 12 words) starting at offset 32

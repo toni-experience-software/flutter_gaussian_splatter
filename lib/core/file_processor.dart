@@ -291,7 +291,7 @@ class FileProcessorImpl {
       offsets,
       types,
     );
-    
+
     // Spherical harmonics coefficients (32-79 bytes)
     _writeSphericalHarmonics(
       inputData,
@@ -587,26 +587,32 @@ class FileProcessorImpl {
                 inData, inRowStart, offs, types, coeffProps[propIdx]) ??
             0.0;
 
-        final byteIdx = colorIdx * 16 + coeffIdx; // Block offset + coefficient index
+        final byteIdx =
+            colorIdx * 16 + coeffIdx; // Block offset + coefficient index
         byteBuffer[byteIdx] = _encodeShCoeff(raw);
       }
 
       // Padding byte for 16-byte alignment per color block
       byteBuffer[colorIdx * 16 + 15] = 0;
+
+
+      for (var word = 0; word < 12; ++word) {
+        // 12 words = 48 bytes
+        final base = word * 4; // little-endian!
+        final b3 = byteBuffer[base + 3]; // MS-byte (sign | exp[7:1])
+
+        //   exponent = 255  ⟺  lower 7 bits of b3 are all 1‘s
+        if ((b3 & 0x7F) == 0x7F) {
+          byteBuffer[base + 3] = b3 & 0x7E; // drop one exponent bit → 254
+        }
+      }
     }
 
     // Write twelve uint32 words (48 bytes / 4 = 12 words) starting at offset 32
-    // Pack and sanitize each uint32 to prevent Mali GPU NaN issues
+    final uintView = Uint32List.view(byteBuffer.buffer);
     for (var i = 0; i < 12; ++i) {
-      final baseIdx = i * 4;
-      final r = byteBuffer[baseIdx];
-      final g = byteBuffer[baseIdx + 1];
-      final b = byteBuffer[baseIdx + 2];
-      final a = byteBuffer[baseIdx + 3];
-      
-      final sanitizedWord = _packAndSanitize(r, g, b, a);
       final destOffset = outRowStart + 32 + i * 4;
-      outView.setUint32(destOffset, sanitizedWord, Endian.little);
+      outView.setUint32(destOffset, uintView[i], Endian.little);
     }
   }
 
@@ -738,19 +744,5 @@ class FileProcessorImpl {
     // Clamp to reference range [-4,4] and quantise to 8-bit unsigned.
     final byte = (c.clamp(-4.0, 4.0) + 4.0) * 255.0 / 8.0;
     return byte.round(); // 0‥255
-  }
-
-  /// Sanitizes packed uint32 data to prevent NaN issues on Mali GPUs.
-  /// 
-  /// If the exponent bits are all 1s (0x7f800000), flips bit 22 to make
-  /// the exponent 254 instead of 255, preventing NaN/Inf interpretation.
-  /// This ensures compatibility across all GPU vendors including Mali.
-  int _packAndSanitize(int r, int g, int b, int a) {
-    int w = (a << 24) | (b << 16) | (g << 8) | r;
-    // If exponent == 255, flip bit 22 (makes exponent 254)
-    if ((w & 0x7f800000) == 0x7f800000) {
-      w ^= 0x00400000;
-    }
-    return w;
   }
 }

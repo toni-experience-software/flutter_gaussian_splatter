@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -6,7 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
-import 'package:flutter_gaussian_splatter/core/covariance_calculator.dart';
 import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
 import 'package:vector_math/vector_math.dart';
 
@@ -460,110 +460,113 @@ class TextureGaussianRenderer {
 
   // Splat texture upload
 
-  void _uploadSplatTexture(Uint8List buffer) {
-    final splatCount = buffer.length ~/ GsConst.bytesPerSplat;
-    final texHeight = ((8 * splatCount) / GsConst.texWidth).ceil();
+  // In texture_gaussian_renderer.dart, replace the _uploadSplatTexture method:
 
-    final fBuffer = Float32List.view(buffer.buffer);
-    final uBuffer = Uint8List.view(buffer.buffer);
-    final floatsPerSplat = GsConst.bytesPerSplat ~/ 4; // 32
+void _uploadSplatTexture(Uint8List buffer) {
+  final splatCount = buffer.length ~/ GsConst.bytesPerSplat;
+  final texHeight = ((8 * splatCount) / GsConst.texWidth).ceil();
 
-    // Send to depth‑sorter immediately (no throttling) so first frame is crisp.
-    if (_camera != null) {
-      final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _depthSorter.runSort(vp, buffer, splatCount);
-    }
+  final fBuffer = Float32List.view(buffer.buffer);
+  final uBuffer = Uint8List.view(buffer.buffer);
+  const floatsPerSplat = GsConst.bytesPerSplat ~/ 4; // 32
 
-    final texData = Float32List(GsConst.texWidth * texHeight * 4);
-
-    for (var original = 0; original < splatCount; original++) {
-      final x = (original & 0xff) << 3; // lower 8 bits → column, times 8
-      final y = original >> 8; // higher bits → row
-
-      final p0Index = (y * GsConst.texWidth + x) * 4;
-      final p1Index = p0Index + 4; // (x + 1, y)
-
-      // Position (P0)
-      texData[p0Index + 0] = fBuffer[floatsPerSplat * original + 0];
-      texData[p0Index + 1] = fBuffer[floatsPerSplat * original + 1];
-      texData[p0Index + 2] = fBuffer[floatsPerSplat * original + 2];
-      texData[p0Index + 3] = 0; // Unused alpha per spec
-
-      // Covariance & colour (P1)
-      final scaleX = fBuffer[floatsPerSplat * original + 3];
-      final scaleY = fBuffer[floatsPerSplat * original + 4];
-      final scaleZ = fBuffer[floatsPerSplat * original + 5];
-
-      final qx = uBuffer[GsConst.bytesPerSplat * original + 28 + 0];
-      final qy = uBuffer[GsConst.bytesPerSplat * original + 28 + 1];
-      final qz = uBuffer[GsConst.bytesPerSplat * original + 28 + 2];
-      final qw = uBuffer[GsConst.bytesPerSplat * original + 28 + 3];
-
-      final packedCov = packedCovariance(
-        scaleX: scaleX,
-        scaleY: scaleY,
-        scaleZ: scaleZ,
-        q0Byte: qx,
-        q1Byte: qy,
-        q2Byte: qz,
-        q3Byte: qw,
-      );
-
-      texData[p1Index + 0] = intBitsToFloat(packedCov[0]);
-      texData[p1Index + 1] = intBitsToFloat(packedCov[1]);
-      texData[p1Index + 2] = intBitsToFloat(packedCov[2]);
-
-      final r = uBuffer[GsConst.bytesPerSplat * original + 24 + 0];
-      final g = uBuffer[GsConst.bytesPerSplat * original + 24 + 1];
-      final b = uBuffer[GsConst.bytesPerSplat * original + 24 + 2];
-      final a = uBuffer[GsConst.bytesPerSplat * original + 24 + 3];
-
-      final packedColour = r | (g << 8) | (b << 16) | (a << 24);
-      texData[p1Index + 3] = Float32List.view(
-        (Uint32List(1)..[0] = packedColour).buffer,
-      )[0];
-
-      // Copy P2-P5 (SH coefficients) - 24 floats = 96 bytes
-      final baseByte = GsConst.bytesPerSplat * original;
-      final dstStart = (y * GsConst.texWidth + x + 2) * 4; // P2 first texel
-      const byteCount = 96; // P2-P5 (24 floats)
-      texData.setRange(dstStart, dstStart + byteCount ~/ 4,
-          fBuffer, baseByte ~/ 4 + 8,); // skip the first 8 floats (= P0+P1)
-    }
-
-    if (_texture != null) {
-      _gl.deleteTexture(_texture!);
-    }
-
-    _texture = _gl.createTexture();
-    _gl
-      ..bindTexture(WebGL.TEXTURE_2D, _texture)
-      ..texParameteri(
-        WebGL.TEXTURE_2D,
-        WebGL.TEXTURE_WRAP_S,
-        WebGL.CLAMP_TO_EDGE,
-      )
-      ..texParameteri(
-        WebGL.TEXTURE_2D,
-        WebGL.TEXTURE_WRAP_T,
-        WebGL.CLAMP_TO_EDGE,
-      )
-      ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
-      ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
-      ..texImage2D(
-        WebGL.TEXTURE_2D,
-        0,
-        WebGL.RGBA32F,
-        GsConst.texWidth,
-        texHeight,
-        0,
-        WebGL.RGBA,
-        WebGL.FLOAT,
-        Float32Array.fromList(texData),
-      );
-
-    _uploadIndexBuffer(splatCount);
+  // Send to depth-sorter immediately (no throttling) so first frame is crisp.
+  if (_camera != null) {
+    final vp = _projectionMatrix.multiplied(_viewMatrix);
+    _depthSorter.runSort(vp, buffer, splatCount);
   }
+
+  final texData = Float32List(GsConst.texWidth * texHeight * 4);
+
+  for (var original = 0; original < splatCount; original++) {
+    final x = (original & 0xff) << 3; // lower 8 bits → column, times 8
+    final y = original >> 8; // higher bits → row
+
+    final p0Index = (y * GsConst.texWidth + x) * 4;
+    final p1Index = p0Index + 4; // (x + 1, y)
+
+    // Position (P0) - unchanged
+    texData[p0Index + 0] = fBuffer[floatsPerSplat * original + 0];
+    texData[p0Index + 1] = fBuffer[floatsPerSplat * original + 1];
+    texData[p0Index + 2] = fBuffer[floatsPerSplat * original + 2];
+    texData[p0Index + 3] = 0; // Unused alpha per spec
+
+    // NEW: Store scale and rotation directly in P1 instead of covariance
+    final scaleX = fBuffer[floatsPerSplat * original + 3];
+    final scaleY = fBuffer[floatsPerSplat * original + 4];
+    final scaleZ = fBuffer[floatsPerSplat * original + 5];
+
+    // Store scales as floats (we still have space in P1)
+    texData[p1Index + 0] = scaleX;
+    texData[p1Index + 1] = scaleY;
+    texData[p1Index + 2] = scaleZ;
+
+    // Pack rotation quaternion (4 bytes) + color (4 bytes) into the alpha channel
+    final qx = uBuffer[GsConst.bytesPerSplat * original + 28 + 0];
+    final qy = uBuffer[GsConst.bytesPerSplat * original + 28 + 1];
+    final qz = uBuffer[GsConst.bytesPerSplat * original + 28 + 2];
+    final qw = uBuffer[GsConst.bytesPerSplat * original + 28 + 3];
+
+    final r = uBuffer[GsConst.bytesPerSplat * original + 24 + 0];
+    final g = uBuffer[GsConst.bytesPerSplat * original + 24 + 1];
+    final b = uBuffer[GsConst.bytesPerSplat * original + 24 + 2];
+    final a = uBuffer[GsConst.bytesPerSplat * original + 24 + 3];
+    
+    // Pack quaternion components back into a single float
+    // We'll decode this in the shader
+    final packedQuat = qx | (qy << 8) | (qz << 16) | (qw << 24);
+    texData[p1Index + 3] = Float32List.view(
+      (Uint32List(1)..[0] = packedQuat).buffer,
+    )[0];
+
+    // Copy P2-P5 (SH coefficients) - unchanged
+    final baseByte = GsConst.bytesPerSplat * original;
+    final dstStart = (y * GsConst.texWidth + x + 2) * 4; // P2 first texel
+    const byteCount = 96; // P2-P5 (24 floats)
+    texData.setRange(dstStart, dstStart + byteCount ~/ 4,
+        fBuffer, baseByte ~/ 4 + 8,); // skip the first 8 floats (= P0+P1)
+    
+    // P6: Store color separately for easier access
+    final p6Index = (y * GsConst.texWidth + x + 6) * 4;
+    final packedColour = r | (g << 8) | (b << 16) | (a << 24);
+    texData[p6Index + 0] = Float32List.view(
+      (Uint32List(1)..[0] = packedColour).buffer,
+    )[0];
+  }
+
+  if (_texture != null) {
+    _gl.deleteTexture(_texture!);
+  }
+
+  _texture = _gl.createTexture();
+  _gl
+    ..bindTexture(WebGL.TEXTURE_2D, _texture)
+    ..texParameteri(
+      WebGL.TEXTURE_2D,
+      WebGL.TEXTURE_WRAP_S,
+      WebGL.CLAMP_TO_EDGE,
+    )
+    ..texParameteri(
+      WebGL.TEXTURE_2D,
+      WebGL.TEXTURE_WRAP_T,
+      WebGL.CLAMP_TO_EDGE,
+    )
+    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
+    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
+    ..texImage2D(
+      WebGL.TEXTURE_2D,
+      0,
+      WebGL.RGBA32F,
+      GsConst.texWidth,
+      texHeight,
+      0,
+      WebGL.RGBA,
+      WebGL.FLOAT,
+      Float32Array.fromList(texData),
+    );
+
+  _uploadIndexBuffer(splatCount);
+}
 
   void _uploadIndexBuffer(int splatCount) {
     // Lazily create / resize persistent index array.

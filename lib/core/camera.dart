@@ -30,8 +30,8 @@ class GaussianCamera {
   /// - [width]: Image width in pixels
   /// - [height]: Image height in pixels
   /// - [horizontalFovDegrees]: Horizontal field of view in deg (default: 45°)
-  /// - [position]: Camera position in world space (default: calculated from orbit)
-  /// - [rotation]: Camera rotation matrix (default: calculated from orbit)
+  /// - [position]: Camera position in world space (default: from orbit)
+  /// - [rotation]: Camera rotation matrix (default:  from orbit)
   /// - [id]: Camera identifier (default: 0)
   factory GaussianCamera.createDefault({
     required double width,

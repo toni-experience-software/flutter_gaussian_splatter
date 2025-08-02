@@ -1,42 +1,86 @@
+// ignore_for_file: public_member_api_docs
 
-
-/// Grouped as an immutable namespace.
+/// Global renderer/packer constants.
+///
+/// Two layouts exist:
+/// 1) CPU/file-packed splat = 128 B (legacy)
+///    We actively use the first 80 B; the remaining 48 B are reserved.
+/// 2) GPU texture atlas = 5 texels per splat (RGBA32F → 5 * 16 B = 80 B).
+///
+/// SH0 (DC) is folded into base RGB. The 45 residual SH coeffs (l=1..3)
+/// are stored as 12 packed uint32 words (48 B) and unpacked in the shader.
 abstract final class GsConst {
-  // ───────────────────────────────────── Vertex / Buffer ──────────────────────
-  /// Bytes per packed splat row (must be power-of-two for alignment on GPU).
-  static const int outputRowLength = 128;
-
-  /// Default linear scale when scale_* properties are missing.
-  static const double defaultScale = 0.01;
-
-  /// Number of bytes that make up *one* packed splat.
+  // ───────────────────────────── CPU / File-packed splat ─────────────────────────────
+  /// Total bytes per splat in the binary file / CPU buffer (aligned).
   static const int bytesPerSplat = 128;
 
-  // ───────────────────────────────────── Texture Atlas ────────────────────────
-  /// Fixed atlas width (pixels); height is computed on upload.
-  static const int texWidth = 2048;
+  /// Bytes per row written by the file processor (must equal [bytesPerSplat]).
+  static const int outputRowLength = bytesPerSplat;
 
-  // ───────────────────────────────────── Quaternion ───────────────────────────
-  /// Centre byte when mapping quaternion components ↔ [-1,1] float.
-  static const int quatByteMid = 128;      // (byte-128) / 128
-  static const int quatScale   = 128;      // multiply by this before +mid
+  /// Portion of the 128 B actually consumed by the uploader 
+  /// (mirrors GPU footprint).
+  static const int usedBytesPerSplat = 80; // 12 + 12 + 4 + 4 + 48 = 80
 
-  // ───────────────────────────────────── Covariance ───────────────────────────
-  /// Specifies Σ' = 4 · (M Mᵀ) per paper / reference implementation.
-  static const double covarianceScale = 4.0;
+  // Offsets inside the 128-byte CPU splat:
+  // P0: position.xyz (float32×3)              →  0..11
+  // P1: scale.xyz    (float32×3, linear)      → 12..23
+  // P1: base color RGBA8 (DC term in RGB)     → 24..27
+  // P0: rotation quaternion RGBA8 (packed)    → 28..31
+  // P2–P4: SH residuals as 12×uint32 (48 B)   → 32..79
+  // 80..127: reserved
+  static const int posOffset   = 0;
+  static const int scaleOffset = 12;
+  static const int colorOffset = 24;
+  static const int quatOffset  = 28;
+  static const int shOffset    = 32;
+  static const int shPackedWords = 12; // 12×uint32 = 48 B @ [32..79]
 
-  // ───────────────────────────────────── Colour / SH ──────────────────────────
-  /// Real Y₀⁰ normalisation factor (0-th SH basis).
-  static const double shC0 = 0.28209479177387814;
+  // ───────────────────────────── GPU texture atlas ───────────────────────────
+  /// Texels per splat in the atlas:
+  ///   P0: pos.xyz + quat(w) | P1: scale.xyz + color(w) | P2–P4: SH words
+  static const int pixelsPerSplat = 5;
 
-  /// Range used when quantising the 45 residual coefficients.
-  static const double shMin  = -4.0;
-  static const double shMax  =  4.0;
-  static const double shSpan = shMax - shMin; // == 8.0
+  /// Bytes per texel for RGBA32F.
+  static const int bytesPerTexel = 16;
 
-  /// Byte range [0,255] used for all 8-bit packing.
-  static const int byteMax = 255;
+  /// Bytes per splat once uploaded to the GPU.
+  static const int bytesPerSplatInTexture = pixelsPerSplat * bytesPerTexel;
 
-  /// Bias used when folding DC term into 8-bit RGB.
+  /// Atlas width in pixels. With bit-addressing in the shader we require:
+  ///   texWidth == pixelsPerSplat * 512 (= 2560), so
+  ///   base_uv = ((idx & 0x1ff) * pixelsPerSplat, idx >> 9)
+  static const int texWidth = 2560;
+  static const int splatsPerRow = texWidth ~/ pixelsPerSplat;   // 512
+  static const int splatIdxColMask = splatsPerRow - 1;          // 0x1ff
+
+  // ───────────────────────────── Quaternion pack/unpack ─────────────────────────────
+  /// CPU packing: q_byte = clamp(round(q * quatScale + quatByteMid), 0, 255)
+  /// Shader decode: q = (byte - quatByteMid) / quatScale, then normalized.
+  static const int quatByteMid = 128;
+  static const int quatScale   = 128;
+  static const int byteMax     = 255;
+
+  // ───────────────────────────── Covariance (renderer) ───────────────────────
+  /// Σ' = covarianceScale * (M * Mᵀ) as in the paper/reference implementation.
+  static const double covarianceScale = 4;
+
+  // ───────────────────────────── Colour / Spherical Harmonics ─────────────────────────
+  /// Real Y₀⁰ normalization (DC basis). Base RGB stores 0.5 + shC0 * f_dc.
+  static const double shC0   = 0.28209479177387814;
+
+  /// Quantization range for residual SH (l=1..3).
+  /// Pack:   byte = round((clamp(c, shMin, shMax) - shMin) * 255 / (shMax - shMin))
+  /// Unpack: value = byte * 8/255 - 4
+  static const double shMin  = -4;
+  static const double shMax  =  4;
+  static const double shSpan = shMax - shMin; // 8.0
+
+  /// Bias used when folding DC into 8-bit RGB: baseRGB = clamp01(baseColourBias
+  ///  + shC0 * f_dc).
   static const double baseColourBias = 0.5;
+
+  // ───────────────────────────── Defaults ─────────────────────────────
+  /// Fallback linear scale if PLY lacks scale_* properties.
+  static const double defaultScale = 0.01;
+
 }

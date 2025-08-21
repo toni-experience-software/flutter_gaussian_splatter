@@ -467,7 +467,7 @@ double _u32AsF32(int u) => Float32List.view((Uint32List(1)..[0] = u).buffer)[0];
 void _uploadSplatTexture(Uint8List buffer) {
   final splatCount = buffer.length ~/ GsConst.bytesPerSplat;
   // New compact layout: 5 texels per splat
-  const pixelsPerSplat = 5;
+  const pixelsPerSplat = GsConst.pixelsPerSplat;
   final texHeight = ((pixelsPerSplat * splatCount) / GsConst.texWidth).ceil();
 
   final fBuffer = Float32List.view(buffer.buffer);

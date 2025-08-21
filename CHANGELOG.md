@@ -1,3 +1,12 @@
+## 0.2.0 - 2025-08-21
+
+* feat: better texture packing with optimized atlas layout (5 texels per splat)
+* feat: constants extraction and reorganization for better maintainability
+* feat: GPU-side covariance computation for improved performance
+* fix: vertex shader improvements with better packing/unpacking logic
+* fix: remove old unused covariance calculation code
+* fix: Mali GPU compatibility improvements
+
 ## 0.1.3 - 2025-06-25
 
 * Use all SH coeffs.

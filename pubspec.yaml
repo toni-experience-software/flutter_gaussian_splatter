@@ -13,13 +13,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_angle: ^0.2.2
-  vector_math: ^2.1.4
+  flutter_angle: ^0.3.5
+  vector_math: ^2.2.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  lintervention: ^0.1.1
+  lintervention: ^0.3.1
   mocktail: ^1.0.3
 
 flutter:

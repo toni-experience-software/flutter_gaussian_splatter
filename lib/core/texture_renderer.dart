@@ -7,12 +7,18 @@ import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
+import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
+import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
+import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
 typedef RendererCallback = void Function();
 
-/// Immutable per‑frame rendering statistics.
+/// Immutable per‑frame rendering performance statistics.
+///
+/// Performance is measured using exponentially weighted moving averages (EWMA)
+/// with automatic GPU profiling when supported by the WebGL context.
 @immutable
 class RenderStats {
   /// Creates a new instance of [RenderStats].
@@ -20,20 +26,56 @@ class RenderStats {
     required this.fps,
     required this.vertexCount,
     required this.lastFrameTime,
+    this.cpuFrameTimeMs,
+    this.gpuFrameTimeMs,
+    this.profilerType,
   });
 
-  /// Estimated frames‑per‑second calculated from the last frame.
+  /// CPU-based frames per second (smoothed with EWMA).
+  /// 
+  /// This measures the total frame time from start to finish on the main thread.
   final double fps;
 
-  /// Number of vertices drawn in the last frame.
+  /// Number of Gaussian splat vertices rendered in the last frame.
   final int vertexCount;
 
-  /// Timestamp of the last rendered frame.
+  /// Timestamp when the last frame was completed.
   final DateTime lastFrameTime;
 
+  /// Average CPU frame time in milliseconds (smoothed with EWMA).
+  /// 
+  /// Measures the time spent on the main thread per frame.
+  final double? cpuFrameTimeMs;
+
+  /// Average GPU frame time in milliseconds (smoothed with EWMA), if available.
+  /// 
+  /// Only available when GPU timing extensions are supported. May be null
+  /// if GPU profiling is unavailable or if measurements are not ready.
+  final double? gpuFrameTimeMs;
+
+  /// Type of performance profiler being used.
+  /// 
+  /// - 'GPU': Using EXT_disjoint_timer_query for accurate GPU timing
+  /// - 'Sampled': Using glFinish() sampling for approximate GPU timing  
+  /// - 'CPU': CPU-only timing fallback
+  final String? profilerType;
+
+  /// GPU-based frames per second, if GPU timing is available.
+  double? get gpuFps => gpuFrameTimeMs != null && gpuFrameTimeMs! > 0
+      ? 1000.0 / gpuFrameTimeMs!
+      : null;
+
+  /// True if GPU timing measurements are available.
+  bool get hasGpuTiming => gpuFrameTimeMs != null;
+
   @override
-  String toString() =>
-      'RenderStats(fps: ${fps.toStringAsFixed(1)}, vtx: $vertexCount)';
+  String toString() {
+    final gpuInfo = hasGpuTiming 
+        ? ', gpu: ${gpuFrameTimeMs!.toStringAsFixed(1)}ms'
+        : '';
+    final profilerInfo = profilerType != null ? ' [$profilerType]' : '';
+    return 'RenderStats(fps: ${fps.toStringAsFixed(1)}, vtx: $vertexCount$gpuInfo$profilerInfo)';
+  }
 }
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
@@ -77,6 +119,7 @@ class TextureGaussianRenderer {
 
   // Core helpers
   late final depth.DepthSorterImpl _depthSorter;
+  late final PerfProfiler _perf;
 
   // Render state & matrices
   var _viewMatrix = Matrix4.identity();
@@ -92,6 +135,9 @@ class TextureGaussianRenderer {
   bool _isRendering = false;
   DateTime _lastFrameTime = DateTime.timestamp();
   double _fps = 0;
+  double? _cpuFrameTimeMs;
+  double? _gpuFrameTimeMs;
+  String? _profilerType;
   bool _isResizing = false;
 
   // Shader sources (kept for context‑loss recovery)
@@ -104,11 +150,14 @@ class TextureGaussianRenderer {
 
   // Public API
 
-  /// Latest frame statistics.
+  /// Latest frame statistics with detailed performance profiling.
   RenderStats get renderStats => RenderStats(
         fps: _fps,
         vertexCount: _vertexCount,
         lastFrameTime: _lastFrameTime,
+        cpuFrameTimeMs: _cpuFrameTimeMs,
+        gpuFrameTimeMs: _gpuFrameTimeMs,
+        profilerType: _profilerType,
       );
 
   /// The texture that can be composed into UI using [FlutterAngleTexture]
@@ -172,6 +221,17 @@ class TextureGaussianRenderer {
     await _compileShaders();
     await _createBuffers();
     _updateProjectionMatrix();
+    
+    _perf = PerfProfiler.auto(_gl);
+    
+    // Determine profiler type for display
+    if (_perf is DisjointQueryGpuProfiler) {
+      _profilerType = 'GPU';
+    } else if (_perf is GlFinishSamplerProfiler) {
+      _profilerType = 'Sampled';
+    } else {
+      _profilerType = 'CPU';
+    }
   }
 
   /// Starts the internal render loop. Idempotent.
@@ -184,14 +244,22 @@ class TextureGaussianRenderer {
   Future<void> frame() async {
     if (!_isRendering) return;
 
-    _updateFps();
+    _perf.beginFrame();
 
     if (_splatBuffer != null && _camera != null && _splatCount > 0) {
       final vp = _projectionMatrix.multiplied(_viewMatrix);
       _depthSorter.throttledSort(vp, _splatBuffer!, _splatCount);
     }
 
+    _perf.markGpuBegin(_gl);
     _draw();
+    _perf.markGpuEnd(_gl);
+
+    final perfStats = _perf.endFrame(_gl);
+    _fps = perfStats.fps;
+    _cpuFrameTimeMs = perfStats.cpuMsAvg;
+    _gpuFrameTimeMs = perfStats.gpuMsAvg;
+    _lastFrameTime = DateTime.timestamp();
   }
 
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
@@ -324,6 +392,12 @@ class TextureGaussianRenderer {
       _depthSorter.dispose();
     } catch (e) {
       debugPrint('Warning: error disposing depth sorter: $e');
+    }
+
+    try {
+      _perf.dispose();
+    } catch (e) {
+      debugPrint('Warning: error disposing profiler: $e');
     }
   }
 
@@ -658,12 +732,7 @@ void _uploadSplatTexture(Uint8List buffer) {
 
   // Matrix helpers
 
-  void _updateFps() {
-    final now = DateTime.timestamp();
-    final deltaMs = now.difference(_lastFrameTime).inMilliseconds;
-    _fps = deltaMs > 0 ? 1000 / deltaMs : 0;
-    _lastFrameTime = now;
-  }
+
 
   void _updateProjectionMatrix() {
     if (_camera == null) return;

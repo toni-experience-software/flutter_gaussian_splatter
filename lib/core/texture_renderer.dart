@@ -132,6 +132,8 @@ class TextureGaussianRenderer {
 
   // Timing & FPS
   bool _isRendering = false;
+  bool _inFrame = false;
+  bool _needDepthSort = true;
   DateTime _lastFrameTime = DateTime.timestamp();
   double _fps = 0;
   double? _cpuFrameTimeMs;
@@ -177,6 +179,7 @@ class TextureGaussianRenderer {
     _camera = camera;
     _updateViewMatrix();
     _updateProjectionMatrix();
+    _needDepthSort = true; 
   }
 
   // Life‑cycle
@@ -211,7 +214,6 @@ class TextureGaussianRenderer {
         dpr: 1, // TODO(jesper): support dpr?
         alpha: true,
         useSurfaceProducer: true,
-        customRenderer: false,
       ),
     );
 
@@ -240,24 +242,38 @@ class TextureGaussianRenderer {
 
   /// Drives a single frame.  Call from a `Ticker` / `SchedulerBinding`.
   Future<void> frame() async {
-    if (!_isRendering) return;
+    // Bail during resize/context swap
+    // Reentrancy guard
+    if (!_isRendering || _isResizing || _inFrame) return;
 
-    _perf.beginFrame();
+    // Guard readiness up front
+    if (_program == null || _camera == null) return;
+    
+    _inFrame = true;
+    try {
+      _perf.beginFrame();
 
-    if (_splatBuffer != null && _camera != null && _splatCount > 0) {
-      final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _depthSorter.throttledSort(vp, _splatBuffer!, _splatCount);
+      // Only sort when needed (camera changed)
+      if (_needDepthSort && _splatBuffer != null && _splatCount > 0) {
+        final vp = _projectionMatrix.multiplied(_viewMatrix);
+        _depthSorter.throttledSort(vp, _splatBuffer!, _splatCount);
+      }
+
+      _perf.markGpuBegin(_gl);
+      _draw();
+      _perf.markGpuEnd(_gl);
+
+      final perfStats = _perf.endFrame(_gl);
+      _fps = perfStats.fps;
+      _cpuFrameTimeMs = perfStats.cpuMsAvg;
+      _gpuFrameTimeMs = perfStats.gpuMsAvg;
+      _lastFrameTime = DateTime.timestamp();
+    } catch (_) {
+      // Recovery path on GL/Program invalidation
+      await _recoverFromContextLoss();
+    } finally {
+      _inFrame = false;
     }
-
-    _perf.markGpuBegin(_gl);
-    _draw();
-    _perf.markGpuEnd(_gl);
-
-    final perfStats = _perf.endFrame(_gl);
-    _fps = perfStats.fps;
-    _cpuFrameTimeMs = perfStats.cpuMsAvg;
-    _gpuFrameTimeMs = perfStats.gpuMsAvg;
-    _lastFrameTime = DateTime.timestamp();
   }
 
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
@@ -272,6 +288,7 @@ class TextureGaussianRenderer {
     }
     _splatBuffer = data;
     _splatCount = data.length ~/ GsConst.bytesPerSplat;
+    _needDepthSort = true;
     _uploadSplatTexture(data);
   }
 
@@ -289,8 +306,8 @@ class TextureGaussianRenderer {
 
     _isResizing = true;
     try {
-      // Camera becomes the source of truth
-      _camera = camera;
+      // Camera becomes the source of truth - use setter to trigger depth sort
+      this.camera = camera;
 
       final desired = AngleOptions(
         width: _camera!.width,
@@ -461,7 +478,7 @@ class TextureGaussianRenderer {
       ..bindBuffer(WebGL.ARRAY_BUFFER, _vertexBuffer)
       ..bufferData(
         WebGL.ARRAY_BUFFER,
-        Float32Array.fromList(Float32List.fromList(quadVertices)),
+        Float32Array.fromList(quadVertices),
         WebGL.STATIC_DRAW,
       );
 
@@ -525,6 +542,7 @@ class TextureGaussianRenderer {
 
     _gl.bufferData(WebGL.ARRAY_BUFFER, _scratchDepthArray, WebGL.DYNAMIC_DRAW);
     _vertexCount = result.vertexCount;
+    _needDepthSort = false; 
   }
 
   // Splat texture upload
@@ -551,7 +569,7 @@ class TextureGaussianRenderer {
       _depthSorter.runSort(vp, buffer, splatCount);
     }
 
-    final texData = Float32List(GsConst.texWidth * texHeight * 4);
+    final texData = Float32Array(GsConst.texWidth * texHeight * 4);
 
     for (var idx = 0; idx < splatCount; idx++) {
       // MUST match vertex.glsl base_uv logic: (idx & 0x1ff) * 5 , idx >> 9
@@ -632,7 +650,7 @@ class TextureGaussianRenderer {
         0,
         WebGL.RGBA,
         WebGL.FLOAT,
-        Float32Array.fromList(texData),
+        texData,
       );
 
     _uploadIndexBuffer(splatCount);

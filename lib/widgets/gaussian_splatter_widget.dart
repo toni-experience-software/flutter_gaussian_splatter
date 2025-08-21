@@ -197,14 +197,28 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       final fovV = camera.verticalFovDegrees;
 
       setState(() {
-        _statsText = '''
-        FPS: ${stats.fps.toStringAsFixed(1)}
-        Vertices: ${stats.vertexCount}
-        Camera Position: (${pos.x.toStringAsFixed(2)}, ${pos.y.toStringAsFixed(2)}, ${pos.z.toStringAsFixed(2)})
-        FOV: ${fovH.toStringAsFixed(1)}° × ${fovV.toStringAsFixed(1)}°
-        Viewport: ${camera.width} × ${camera.height}
-        Focal Length: fx=${camera.fx.toStringAsFixed(1)}, fy=${camera.fy.toStringAsFixed(1)}
-        Interacting: ${_isInteracting ? 'Yes' : 'No'}''';
+        // Build performance info with proper context
+        final perfInfo = StringBuffer()
+        ..writeln('Performance [${stats.profilerType ?? 'Unknown'}]:')
+        ..writeln('  CPU: ${stats.fps.toStringAsFixed(1)} FPS (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)');
+        
+        if (stats.hasGpuTiming && stats.gpuFps != null) {
+          perfInfo.writeln('  GPU: ${stats.gpuFps!.toStringAsFixed(1)} FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)');
+        } else {
+          perfInfo.writeln('  GPU: Timing unavailable');
+        }
+        
+        _statsText = '''$perfInfo
+Rendering:
+  Gaussian Splats: ${stats.vertexCount}
+  Viewport: ${camera.width} × ${camera.height}px
+  
+Camera:
+  Position: (${pos.x.toStringAsFixed(2)}, ${pos.y.toStringAsFixed(2)}, ${pos.z.toStringAsFixed(2)})
+  FOV: ${fovH.toStringAsFixed(1)}° × ${fovV.toStringAsFixed(1)}°
+  Focal: fx=${camera.fx.toStringAsFixed(1)}, fy=${camera.fy.toStringAsFixed(1)}
+  
+Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
       });
     }
   }

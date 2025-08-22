@@ -1,20 +1,21 @@
 // ignore_for_file: avoid_dynamic_calls
 import 'dart:collection';
 import 'dart:ffi' as ffi;
-import 'package:ffi/ffi.dart' as ffix;
 
+import 'package:ffi/ffi.dart' as ffix;
+// Pull in the GLES constants (re-exported by flutter_angle)
+import 'package:flutter_angle/flutter_angle.dart' as angle;
 import 'package:flutter_gaussian_splatter/core/perf/ewma.dart';
 import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
 
-// Pull in the GLES constants (re-exported by flutter_angle)
-import 'package:flutter_angle/flutter_angle.dart' as angle;
-
 /// GPU profiler using EXT_disjoint_timer_query on ANGLE / OpenGL ES.
-/// Pass the **native GL binding object directly** (the one with glGenQueries, glBeginQuery, …).
+/// Pass the **native GL binding object directly**
+/// (the one with glGenQueries, glBeginQuery, …).
 class DisjointQueryGpuProfiler implements PerfProfiler {
   DisjointQueryGpuProfiler._(this.gl);
 
-  /// The native GLES FFI binding (e.g., the object that has glGenQueries, glGetQueryiv, etc.)
+  /// The native GLES FFI binding (e.g., the object that has glGenQueries,
+  /// glGetQueryiv, etc.)
   final dynamic gl;
 
   final Stopwatch _sw = Stopwatch();
@@ -45,13 +46,14 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
     }
   }
 
-  // ---- GLES helpers ----------------------------------------------------------
+  // ---- GLES helpers --------------------------------------------------------
 
   static int _queryCounterBits(dynamic gl) {
     final p = ffix.calloc<ffi.Int32>();
     try {
       // glGetQueryiv(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &bits)
-      gl.glGetQueryiv(angle.GL_TIME_ELAPSED_EXT, angle.GL_QUERY_COUNTER_BITS_EXT, p);
+      gl.glGetQueryiv(
+          angle.GL_TIME_ELAPSED_EXT, angle.GL_QUERY_COUNTER_BITS_EXT, p,);
       return p.value;
     } finally {
       ffix.calloc.free(p);
@@ -104,7 +106,8 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
     } catch (_) {
       // 64-bit path not present—fall through to 32-bit.
     }
-    return _getQueryObjectuiv(id, angle.GL_QUERY_RESULT_EXT); // ns (lower 32 bits)
+    return _getQueryObjectuiv(
+        id, angle.GL_QUERY_RESULT_EXT,); // ns (lower 32 bits)
   }
 
   bool _gpuDisjoint() {
@@ -119,12 +122,14 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
     }
   }
 
-  // ---- PerfProfiler API ------------------------------------------------------
+  // ---- PerfProfiler API ----------------------------------------------------
 
   @override
   void beginFrame() {
     _beganThisFrame = false;
-    _sw..reset()..start();
+    _sw
+      ..reset()
+      ..start();
   }
 
   int? _alloc() => _pool.isNotEmpty ? _pool.removeLast() : null;
@@ -133,7 +138,7 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
   @override
   void markGpuBegin(dynamic _) {
     final q = _alloc();
-    if (q == null) return;           // No free query this frame.
+    if (q == null) return; // No free query this frame.
     gl.glBeginQuery(angle.GL_TIME_ELAPSED_EXT, q);
     _inFlight.addLast(q);
     _beganThisFrame = true;
@@ -149,7 +154,9 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
   double? _harvest() {
     // If GPU became disjoint, pending results are invalid—drop them.
     if (_gpuDisjoint()) {
-      while (_inFlight.isNotEmpty) _recycle(_inFlight.removeFirst());
+      while (_inFlight.isNotEmpty) {
+        _recycle(_inFlight.removeFirst());
+      }
       return null;
     }
 
@@ -158,13 +165,14 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
       final id = _inFlight.first;
 
       // Non-blocking readiness check
-      final ready = _getQueryObjectuiv(id, angle.GL_QUERY_RESULT_AVAILABLE_EXT) != 0;
+      final ready =
+          _getQueryObjectuiv(id, angle.GL_QUERY_RESULT_AVAILABLE_EXT) != 0;
       if (!ready) break;
 
       _inFlight.removeFirst();
 
       final ns = _getQueryResultNs(id); // nanoseconds
-      ms = ns / 1e6;                    // → milliseconds
+      ms = ns / 1e6; // → milliseconds
       _recycle(id);
     }
     return ms;
@@ -188,9 +196,13 @@ class DisjointQueryGpuProfiler implements PerfProfiler {
   @override
   void dispose() {
     try {
-      while (_inFlight.isNotEmpty) _recycle(_inFlight.removeFirst());
+      while (_inFlight.isNotEmpty) {
+        _recycle(_inFlight.removeFirst());
+      }
       for (final id in _pool) {
-        try { _deleteQuery(id); } catch (_) {}
+        try {
+          _deleteQuery(id);
+        } catch (_) {}
       }
     } catch (_) {}
     _pool.clear();

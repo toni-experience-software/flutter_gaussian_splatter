@@ -36,6 +36,7 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
       body: GaussianSplatterWidget(
         assetPath: 'assets/toycar.ply',
         showStats: _showStats,
+        enableProfiling: true,
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {

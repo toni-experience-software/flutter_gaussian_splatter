@@ -7,12 +7,18 @@ import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
+import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
+import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
+import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
 typedef RendererCallback = void Function();
 
-/// Immutable per‑frame rendering statistics.
+/// Immutable per‑frame rendering performance statistics.
+///
+/// Performance is measured using exponentially weighted moving averages (EWMA)
+/// with automatic GPU profiling when supported by the WebGL context.
 @immutable
 class RenderStats {
   /// Creates a new instance of [RenderStats].
@@ -20,20 +26,56 @@ class RenderStats {
     required this.fps,
     required this.vertexCount,
     required this.lastFrameTime,
+    this.cpuFrameTimeMs,
+    this.gpuFrameTimeMs,
+    this.profilerType,
   });
 
-  /// Estimated frames‑per‑second calculated from the last frame.
+  /// CPU-based frames per second (smoothed with EWMA).
+  ///
+  /// This measures the total frame time from start to finish on the main
+  /// thread.
   final double fps;
 
-  /// Number of vertices drawn in the last frame.
+  /// Number of Gaussian splat vertices rendered in the last frame.
   final int vertexCount;
 
-  /// Timestamp of the last rendered frame.
+  /// Timestamp when the last frame was completed.
   final DateTime lastFrameTime;
 
+  /// Average CPU frame time in milliseconds (smoothed with EWMA).
+  ///
+  /// Measures the time spent on the main thread per frame.
+  final double? cpuFrameTimeMs;
+
+  /// Average GPU frame time in milliseconds (smoothed with EWMA), if available.
+  ///
+  /// Only available when GPU timing extensions are supported. May be null
+  /// if GPU profiling is unavailable or if measurements are not ready.
+  final double? gpuFrameTimeMs;
+
+  /// Type of performance profiler being used.
+  ///
+  /// - 'GPU': Using EXT_disjoint_timer_query for accurate GPU timing
+  /// - 'Sampled': Using glFinish() sampling for approximate GPU timing
+  /// - 'CPU': CPU-only timing fallback
+  final String? profilerType;
+
+  /// GPU-based frames per second, if GPU timing is available.
+  double? get gpuFps => gpuFrameTimeMs != null && gpuFrameTimeMs! > 0
+      ? 1000.0 / gpuFrameTimeMs!
+      : null;
+
+  /// True if GPU timing measurements are available.
+  bool get hasGpuTiming => gpuFrameTimeMs != null;
+
   @override
-  String toString() =>
-      'RenderStats(fps: ${fps.toStringAsFixed(1)}, vtx: $vertexCount)';
+  String toString() {
+    final gpuInfo =
+        hasGpuTiming ? ', gpu: ${gpuFrameTimeMs!.toStringAsFixed(1)}ms' : '';
+    final profilerInfo = profilerType != null ? ' [$profilerType]' : '';
+    return 'RenderStats(fps: ${fps.toStringAsFixed(1)}, vtx: $vertexCount$gpuInfo$profilerInfo)';
+  }
 }
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
@@ -77,6 +119,7 @@ class TextureGaussianRenderer {
 
   // Core helpers
   late final depth.DepthSorterImpl _depthSorter;
+  late final PerfProfiler _perf;
 
   // Render state & matrices
   var _viewMatrix = Matrix4.identity();
@@ -90,8 +133,13 @@ class TextureGaussianRenderer {
 
   // Timing & FPS
   bool _isRendering = false;
+  bool _inFrame = false;
+  bool _needDepthSort = true;
   DateTime _lastFrameTime = DateTime.timestamp();
   double _fps = 0;
+  double? _cpuFrameTimeMs;
+  double? _gpuFrameTimeMs;
+  String? _profilerType;
   bool _isResizing = false;
 
   // Shader sources (kept for context‑loss recovery)
@@ -104,11 +152,14 @@ class TextureGaussianRenderer {
 
   // Public API
 
-  /// Latest frame statistics.
+  /// Latest frame statistics with detailed performance profiling.
   RenderStats get renderStats => RenderStats(
         fps: _fps,
         vertexCount: _vertexCount,
         lastFrameTime: _lastFrameTime,
+        cpuFrameTimeMs: _cpuFrameTimeMs,
+        gpuFrameTimeMs: _gpuFrameTimeMs,
+        profilerType: _profilerType,
       );
 
   /// The texture that can be composed into UI using [FlutterAngleTexture]
@@ -129,6 +180,7 @@ class TextureGaussianRenderer {
     _camera = camera;
     _updateViewMatrix();
     _updateProjectionMatrix();
+    _needDepthSort = true;
   }
 
   // Life‑cycle
@@ -141,7 +193,6 @@ class TextureGaussianRenderer {
 
     _depthSorter = depth.DepthSorterImpl(onSortComplete: _onDepthSortComplete);
     await _depthSorter.initialize();
-    
   }
 
   /// Creates a texture and compiles the shaders.  Safe to call multiple times –
@@ -151,6 +202,7 @@ class TextureGaussianRenderer {
     required double height,
     required String vertexShaderCode,
     required String fragmentShaderCode,
+    bool enableProfiling = false,
   }) async {
     assert(width > 0 && height > 0, 'Viewport must be non‑zero');
 
@@ -164,7 +216,6 @@ class TextureGaussianRenderer {
         dpr: 1, // TODO(jesper): support dpr?
         alpha: true,
         useSurfaceProducer: true,
-        customRenderer: false,
       ),
     );
 
@@ -172,6 +223,19 @@ class TextureGaussianRenderer {
     await _compileShaders();
     await _createBuffers();
     _updateProjectionMatrix();
+
+    if (enableProfiling) {
+      _perf = PerfProfiler.auto(_gl);
+
+      // Determine profiler type for display
+      if (_perf is DisjointQueryGpuProfiler) {
+        _profilerType = 'GPU';
+      } else if (_perf is GlFinishSamplerProfiler) {
+        _profilerType = 'Sampled';
+      } else {
+        _profilerType = 'CPU';
+      }
+    }
   }
 
   /// Starts the internal render loop. Idempotent.
@@ -182,16 +246,38 @@ class TextureGaussianRenderer {
 
   /// Drives a single frame.  Call from a `Ticker` / `SchedulerBinding`.
   Future<void> frame() async {
-    if (!_isRendering) return;
+    // Bail during resize/context swap
+    // Reentrancy guard
+    if (!_isRendering || _isResizing || _inFrame) return;
 
-    _updateFps();
+    // Guard readiness up front
+    if (_program == null || _camera == null) return;
 
-    if (_splatBuffer != null && _camera != null && _splatCount > 0) {
-      final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _depthSorter.throttledSort(vp, _splatBuffer!, _splatCount);
+    _inFrame = true;
+    try {
+      _perf.beginFrame();
+
+      // Only sort when needed (camera changed)
+      if (_needDepthSort && _splatBuffer != null && _splatCount > 0) {
+        final vp = _projectionMatrix.multiplied(_viewMatrix);
+        _depthSorter.throttledSort(vp, _splatBuffer!, _splatCount);
+      }
+
+      _perf.markGpuBegin(_gl);
+      _draw();
+      _perf.markGpuEnd(_gl);
+
+      final perfStats = _perf.endFrame(_gl);
+      _fps = perfStats.fps;
+      _cpuFrameTimeMs = perfStats.cpuMsAvg;
+      _gpuFrameTimeMs = perfStats.gpuMsAvg;
+      _lastFrameTime = DateTime.timestamp();
+    } catch (_) {
+      // Recovery path on GL/Program invalidation
+      await _recoverFromContextLoss();
+    } finally {
+      _inFrame = false;
     }
-
-    _draw();
   }
 
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
@@ -206,17 +292,16 @@ class TextureGaussianRenderer {
     }
     _splatBuffer = data;
     _splatCount = data.length ~/ GsConst.bytesPerSplat;
+    _needDepthSort = true;
     _uploadSplatTexture(data);
   }
 
   /// Resizes the render target. If a camera is set, its intrinsics are updated
   /// to preserve the current field‑of‑view.
-  Future<bool> resize(
-    GaussianCamera camera,
-  ) async {
+  Future<bool> resize(GaussianCamera camera) async {
     if (_isResizing) return false;
 
-    // Check if resize is actually needed
+    // No-op if size unchanged
     if (_camera != null &&
         camera.width == _camera!.width &&
         camera.height == _camera!.height) {
@@ -224,80 +309,81 @@ class TextureGaussianRenderer {
     }
 
     _isResizing = true;
-
     try {
+      // Camera becomes the source of truth - use setter to trigger depth sort
+      this.camera = camera;
+
+      final desired = AngleOptions(
+        width: _camera!.width,
+        height: _camera!.height,
+        dpr: 1,
+        alpha: true,
+        useSurfaceProducer: true,
+        customRenderer: false,
+      );
+
+      // ---- 1) Try in-place resize (preserves GL context & GL objects)
+      try {
+        await _angle.resize(_targetTexture, desired);
+      } catch (_) {
+        debugPrint('resize failed');
+        // ignore and fall back below
+      }
+
+      // If resize worked, the plugin updates texture.options in place.
+      if (_targetTexture.options.width == desired.width &&
+          _targetTexture.options.height == desired.height) {
+        _updateProjectionMatrix();
+        _updateViewMatrix();
+        return true;
+      }
+
+      // ---- 2) Fallback: create a new texture, switch, then free the old one
       final previousTexture = _targetTexture;
       final previousGl = _gl;
 
-      // Update camera first - this becomes our source of truth
-      _camera = camera;
-
       FlutterAngleTexture? newTexture;
-
       try {
-        newTexture = await _angle.createTexture(
-          AngleOptions(
-            width: _camera!.width,
-            height: _camera!.height,
-            dpr: 1, // TODO(jesper): support dpr?
-            alpha: true,
-            useSurfaceProducer: true,
-            customRenderer: false,
-          ),
-        );
-
+        newTexture = await _angle.createTexture(desired);
         final newGl = newTexture.getContext();
-        final contextSurvived = _gl == newGl &&
-            _program != null &&
-            _gl.isProgram(_program!) == true;
 
-        // Update to new context and texture
+        // Switch targets
         _gl = newGl;
         _targetTexture = newTexture;
 
-        // Unbind any textures before disposal (Pattern 1 fix)
-        _gl.bindTexture(WebGL.TEXTURE_2D, null);
+        // Since the RenderingContext wrapper instance changed, 
+        // rebuild GL objects
+        _disposeGlResourcesForContext(previousGl);
+        await _recoverFromContextLoss();
 
-        // Dispose the previous texture after successful creation
+        // Free the old native texture (fixes leak)
         try {
-          _disposeGlResourcesForContext(previousGl);
-          _angle.dispose([previousTexture]);
+          await _angle.deleteTexture(previousTexture);
         } catch (e) {
-          debugPrint(
-            'Warning: error disposing previous texture during resize: $e',
-          );
+          debugPrint('Warning: deleting previous texture failed: $e');
         }
 
-        if (contextSurvived) {
-          _updateProjectionMatrix();
-          _updateViewMatrix();
-        } else {
-          await _recoverFromContextLoss();
-        }
-
+        _updateProjectionMatrix();
+        _updateViewMatrix();
         return true;
-      } catch (error, stack) {
-        // Clean up the new texture if it was created but we're rolling back
+      } catch (e, st) {
+        // If we created a new texture, free it
         if (newTexture != null) {
           try {
-            _angle.dispose([newTexture]);
-          } catch (e) {
-            debugPrint(
-              'Warning: error disposing new texture during rollback: $e',
-            );
+            await _angle.deleteTexture(newTexture);
+          } catch (ee) {
+            debugPrint('Warning: deleting failed texture during rollback: $ee');
           }
         }
-
-        // Only roll back if previousTexture is still valid
+        // Roll back to previous target/context if still valid
         try {
           _targetTexture = previousTexture;
           _gl = previousTexture.getContext();
-        } catch (e) {
-          debugPrint('Warning: Cannot roll back to previous texture: $e');
+        } catch (ee) {
+          debugPrint('Warning: cannot roll back to previous texture: $ee');
           rethrow;
         }
-
-        debugPrint('Resize failed: $error\n$stack');
+        debugPrint('Resize failed: $e\n$st');
         rethrow;
       }
     } finally {
@@ -324,6 +410,12 @@ class TextureGaussianRenderer {
       _depthSorter.dispose();
     } catch (e) {
       debugPrint('Warning: error disposing depth sorter: $e');
+    }
+
+    try {
+      _perf.dispose();
+    } catch (e) {
+      debugPrint('Warning: error disposing profiler: $e');
     }
   }
 
@@ -391,7 +483,7 @@ class TextureGaussianRenderer {
       ..bindBuffer(WebGL.ARRAY_BUFFER, _vertexBuffer)
       ..bufferData(
         WebGL.ARRAY_BUFFER,
-        Float32Array.fromList(Float32List.fromList(quadVertices)),
+        Float32Array.fromList(quadVertices),
         WebGL.STATIC_DRAW,
       );
 
@@ -455,116 +547,119 @@ class TextureGaussianRenderer {
 
     _gl.bufferData(WebGL.ARRAY_BUFFER, _scratchDepthArray, WebGL.DYNAMIC_DRAW);
     _vertexCount = result.vertexCount;
+    _needDepthSort = false;
   }
 
   // Splat texture upload
 
   // In texture_gaussian_renderer.dart, replace the _uploadSplatTexture method:
 // ---- helper for int32 -> float32 bitcast ----
-@pragma('vm:prefer-inline')
-double _u32AsF32(int u) => Float32List.view((Uint32List(1)..[0] = u).buffer)[0];
+  @pragma('vm:prefer-inline')
+  double _u32AsF32(int u) =>
+      Float32List.view((Uint32List(1)..[0] = u).buffer)[0];
 
-void _uploadSplatTexture(Uint8List buffer) {
-  final splatCount = buffer.length ~/ GsConst.bytesPerSplat;
-  // New compact layout: 5 texels per splat
-  const pixelsPerSplat = GsConst.pixelsPerSplat;
-  final texHeight = ((pixelsPerSplat * splatCount) / GsConst.texWidth).ceil();
+  void _uploadSplatTexture(Uint8List buffer) {
+    final splatCount = buffer.length ~/ GsConst.bytesPerSplat;
+    // New compact layout: 5 texels per splat
+    const pixelsPerSplat = GsConst.pixelsPerSplat;
+    final texHeight = ((pixelsPerSplat * splatCount) / GsConst.texWidth).ceil();
 
-  final fBuffer = Float32List.view(buffer.buffer);
-  final uBuffer = Uint8List.view(buffer.buffer);
-  const floatsPerSplat = GsConst.bytesPerSplat ~/ 4; // e.g., 32
+    final fBuffer = Float32List.view(buffer.buffer);
+    final uBuffer = Uint8List.view(buffer.buffer);
+    const floatsPerSplat = GsConst.bytesPerSplat ~/ 4; // e.g., 32
 
-  // Send to depth-sorter immediately (no throttling) so first frame is crisp.
-  if (_camera != null) {
-    final vp = _projectionMatrix.multiplied(_viewMatrix);
-    _depthSorter.runSort(vp, buffer, splatCount);
+    // Send to depth-sorter immediately (no throttling) so first frame is crisp.
+    if (_camera != null) {
+      final vp = _projectionMatrix.multiplied(_viewMatrix);
+      _depthSorter.runSort(vp, buffer, splatCount);
+    }
+
+    final texData = Float32Array(GsConst.texWidth * texHeight * 4);
+
+    for (var idx = 0; idx < splatCount; idx++) {
+      // MUST match vertex.glsl base_uv logic: (idx & 0x1ff) * 5 , idx >> 9
+      final x = (idx & 0x1ff) * pixelsPerSplat;
+      final y = idx >> 9;
+
+      final p0Index = (y * GsConst.texWidth + x + 0) * 4;
+      final p1Index = (y * GsConst.texWidth + x + 1) * 4;
+      final p2Index = (y * GsConst.texWidth + x + 2) * 4;
+      final p3Index = (y * GsConst.texWidth + x + 3) * 4;
+      final p4Index = (y * GsConst.texWidth + x + 4) * 4;
+
+      final fBase = floatsPerSplat * idx;
+      final bBase = GsConst.bytesPerSplat * idx;
+
+      // --- P0: position (xyz) + packed quaternion (w) ---
+      texData[p0Index + 0] = fBuffer[fBase + 0]; // x
+      texData[p0Index + 1] = fBuffer[fBase + 1]; // y
+      texData[p0Index + 2] = fBuffer[fBase + 2]; // z
+      // quaternion bytes at offsets 28..31
+      final qx = uBuffer[bBase + 28 + 0];
+      final qy = uBuffer[bBase + 28 + 1];
+      final qz = uBuffer[bBase + 28 + 2];
+      final qw = uBuffer[bBase + 28 + 3];
+      final packedQuat = qx | (qy << 8) | (qz << 16) | (qw << 24);
+      texData[p0Index + 3] = _u32AsF32(packedQuat);
+
+      // --- P1: scale (xyz) + packed color (w) ---
+      texData[p1Index + 0] = fBuffer[fBase + 3]; // sx
+      texData[p1Index + 1] = fBuffer[fBase + 4]; // sy
+      texData[p1Index + 2] = fBuffer[fBase + 5]; // sz
+      // color bytes at offsets 24..27
+      final r = uBuffer[bBase + 24 + 0];
+      final g = uBuffer[bBase + 24 + 1];
+      final b = uBuffer[bBase + 24 + 2];
+      final a = uBuffer[bBase + 24 + 3];
+      final packedColor = r | (g << 8) | (b << 16) | (a << 24);
+      texData[p1Index + 3] = _u32AsF32(packedColor);
+
+      // --- P2..P4: SH block (12 packed words) ---
+      // We only need the *first 12 floats* (48 bytes) for the shader.
+      final shFloatStart = (bBase + 32) >> 2; // float index
+      // P2
+      texData[p2Index + 0] = fBuffer[shFloatStart + 0];
+      texData[p2Index + 1] = fBuffer[shFloatStart + 1];
+      texData[p2Index + 2] = fBuffer[shFloatStart + 2];
+      texData[p2Index + 3] = fBuffer[shFloatStart + 3];
+      // P3
+      texData[p3Index + 0] = fBuffer[shFloatStart + 4];
+      texData[p3Index + 1] = fBuffer[shFloatStart + 5];
+      texData[p3Index + 2] = fBuffer[shFloatStart + 6];
+      texData[p3Index + 3] = fBuffer[shFloatStart + 7];
+      // P4
+      texData[p4Index + 0] = fBuffer[shFloatStart + 8];
+      texData[p4Index + 1] = fBuffer[shFloatStart + 9];
+      texData[p4Index + 2] = fBuffer[shFloatStart + 10];
+      texData[p4Index + 3] = fBuffer[shFloatStart + 11];
+    }
+
+    // Upload
+    if (_texture != null) _gl.deleteTexture(_texture!);
+
+    _texture = _gl.createTexture();
+    _gl
+      ..bindTexture(WebGL.TEXTURE_2D, _texture)
+      ..texParameteri(
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE,)
+      ..texParameteri(
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE,)
+      ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
+      ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
+      ..texImage2D(
+        WebGL.TEXTURE_2D,
+        0,
+        WebGL.RGBA32F,
+        GsConst.texWidth,
+        texHeight,
+        0,
+        WebGL.RGBA,
+        WebGL.FLOAT,
+        texData,
+      );
+
+    _uploadIndexBuffer(splatCount);
   }
-
-  final texData = Float32List(GsConst.texWidth * texHeight * 4);
-
-  for (var idx = 0; idx < splatCount; idx++) {
-    // MUST match vertex.glsl base_uv logic: (idx & 0x1ff) * 5 , idx >> 9
-    final x = (idx & 0x1ff) * pixelsPerSplat;
-    final y = idx >> 9;
-
-    final p0Index = (y * GsConst.texWidth + x + 0) * 4;
-    final p1Index = (y * GsConst.texWidth + x + 1) * 4;
-    final p2Index = (y * GsConst.texWidth + x + 2) * 4;
-    final p3Index = (y * GsConst.texWidth + x + 3) * 4;
-    final p4Index = (y * GsConst.texWidth + x + 4) * 4;
-
-    final fBase = floatsPerSplat * idx;
-    final bBase = GsConst.bytesPerSplat * idx;
-
-    // --- P0: position (xyz) + packed quaternion (w) ---
-    texData[p0Index + 0] = fBuffer[fBase + 0]; // x
-    texData[p0Index + 1] = fBuffer[fBase + 1]; // y
-    texData[p0Index + 2] = fBuffer[fBase + 2]; // z
-    // quaternion bytes at offsets 28..31
-    final qx = uBuffer[bBase + 28 + 0];
-    final qy = uBuffer[bBase + 28 + 1];
-    final qz = uBuffer[bBase + 28 + 2];
-    final qw = uBuffer[bBase + 28 + 3];
-    final packedQuat = qx | (qy << 8) | (qz << 16) | (qw << 24);
-    texData[p0Index + 3] = _u32AsF32(packedQuat);
-
-    // --- P1: scale (xyz) + packed color (w) ---
-    texData[p1Index + 0] = fBuffer[fBase + 3]; // sx
-    texData[p1Index + 1] = fBuffer[fBase + 4]; // sy
-    texData[p1Index + 2] = fBuffer[fBase + 5]; // sz
-    // color bytes at offsets 24..27
-    final r = uBuffer[bBase + 24 + 0];
-    final g = uBuffer[bBase + 24 + 1];
-    final b = uBuffer[bBase + 24 + 2];
-    final a = uBuffer[bBase + 24 + 3];
-    final packedColor = r | (g << 8) | (b << 16) | (a << 24);
-    texData[p1Index + 3] = _u32AsF32(packedColor);
-
-    // --- P2..P4: SH block (12 packed words) ---
-    // We only need the *first 12 floats* (48 bytes) for the shader.
-    final shFloatStart = (bBase + 32) >> 2; // float index
-    // P2
-    texData[p2Index + 0] = fBuffer[shFloatStart + 0];
-    texData[p2Index + 1] = fBuffer[shFloatStart + 1];
-    texData[p2Index + 2] = fBuffer[shFloatStart + 2];
-    texData[p2Index + 3] = fBuffer[shFloatStart + 3];
-    // P3
-    texData[p3Index + 0] = fBuffer[shFloatStart + 4];
-    texData[p3Index + 1] = fBuffer[shFloatStart + 5];
-    texData[p3Index + 2] = fBuffer[shFloatStart + 6];
-    texData[p3Index + 3] = fBuffer[shFloatStart + 7];
-    // P4
-    texData[p4Index + 0] = fBuffer[shFloatStart + 8];
-    texData[p4Index + 1] = fBuffer[shFloatStart + 9];
-    texData[p4Index + 2] = fBuffer[shFloatStart + 10];
-    texData[p4Index + 3] = fBuffer[shFloatStart + 11];
-  }
-
-  // Upload
-  if (_texture != null) _gl.deleteTexture(_texture!);
-
-  _texture = _gl.createTexture();
-  _gl
-    ..bindTexture(WebGL.TEXTURE_2D, _texture)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
-    ..texImage2D(
-      WebGL.TEXTURE_2D,
-      0,
-      WebGL.RGBA32F,
-      GsConst.texWidth,
-      texHeight,
-      0,
-      WebGL.RGBA,
-      WebGL.FLOAT,
-      Float32Array.fromList(texData),
-    );
-
-  _uploadIndexBuffer(splatCount);
-}
-
 
   void _uploadIndexBuffer(int splatCount) {
     // Lazily create / resize persistent index array.
@@ -658,13 +753,6 @@ void _uploadSplatTexture(Uint8List buffer) {
 
   // Matrix helpers
 
-  void _updateFps() {
-    final now = DateTime.timestamp();
-    final deltaMs = now.difference(_lastFrameTime).inMilliseconds;
-    _fps = deltaMs > 0 ? 1000 / deltaMs : 0;
-    _lastFrameTime = now;
-  }
-
   void _updateProjectionMatrix() {
     if (_camera == null) return;
     _projectionMatrix = _makeProjectionMatrix(
@@ -727,17 +815,48 @@ void _uploadSplatTexture(Uint8List buffer) {
   }
 
   // Context‑loss recovery
-
   Future<void> _recoverFromContextLoss() async {
+    // Drop stale CPU-side caches
     _scratchDepthArray = null;
     _persistentIndexArray = null;
 
-    _disposeGlResourcesForContext(_gl);
-    await _compileShaders();
-    await _createBuffers();
+    // Ensure any leftover GL objects (if any) are gone on the *current* context.
+    // Safe no-op when nothing exists.
+    try {
+      _disposeGlResourcesForContext(_gl);
+    } catch (_) {}
+
+    // Rebuild GPU state; if this fails once, leave things null and let next
+    //frame retry.
+    try {
+      await _compileShaders();
+      await _createBuffers();
+    } catch (e) {
+      debugPrint('Recover failed, will retry next frame: $e');
+      return; // leave program/buffers null; next call to frame() can try again
+    }
 
     _updateProjectionMatrix();
 
+    //old profiler holds queries & GL pointers from the previous context.
+    try {
+      _perf.dispose();
+    } catch (_) {}
+
+    // Recreate profiler with same settings as original setup
+    final enableProfiling = _profilerType != null;
+    if (enableProfiling) {
+      _perf = PerfProfiler.auto(_gl);
+      if (_perf is DisjointQueryGpuProfiler) {
+        _profilerType = 'GPU';
+      } else if (_perf is GlFinishSamplerProfiler) {
+        _profilerType = 'Sampled';
+      } else {
+        _profilerType = 'CPU';
+      }
+    }
+
+    // Re-upload content if available
     if (_splatBuffer != null && _splatCount > 0) {
       _uploadSplatTexture(_splatBuffer!);
     }
@@ -755,16 +874,16 @@ void _uploadSplatTexture(Uint8List buffer) {
       try {
         gl.deleteProgram(_program!);
       } catch (_) {}
-      _program = null;
-      _uProjection = null;
-      _uView = null;
-      _uFocal = null;
-      _uViewport = null;
-      _uTexture = null;
-      _aPosition = null;
-      _aIndex = null;
-      _uniformLocationCache.clear();
     }
+    _program = null;
+    _uProjection = null;
+    _uView = null;
+    _uFocal = null;
+    _uViewport = null;
+    _uTexture = null;
+    _aPosition = null;
+    _aIndex = null;
+    _uniformLocationCache.clear();
 
     if (_vertexBuffer != null) {
       try {

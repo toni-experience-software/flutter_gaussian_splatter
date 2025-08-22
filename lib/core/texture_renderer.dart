@@ -119,7 +119,7 @@ class TextureGaussianRenderer {
 
   // Core helpers
   late final depth.DepthSorterImpl _depthSorter;
-  late final PerfProfiler _perf;
+  PerfProfiler? _perf;
 
   // Render state & matrices
   var _viewMatrix = Matrix4.identity();
@@ -235,6 +235,9 @@ class TextureGaussianRenderer {
       } else {
         _profilerType = 'CPU';
       }
+    } else {
+      _perf = null;
+      _profilerType = null;
     }
   }
 
@@ -255,7 +258,7 @@ class TextureGaussianRenderer {
 
     _inFrame = true;
     try {
-      _perf.beginFrame();
+      _perf?.beginFrame();
 
       // Only sort when needed (camera changed)
       if (_needDepthSort && _splatBuffer != null && _splatCount > 0) {
@@ -263,14 +266,16 @@ class TextureGaussianRenderer {
         _depthSorter.throttledSort(vp, _splatBuffer!, _splatCount);
       }
 
-      _perf.markGpuBegin(_gl);
+      _perf?.markGpuBegin(_gl);
       _draw();
-      _perf.markGpuEnd(_gl);
+      _perf?.markGpuEnd(_gl);
 
-      final perfStats = _perf.endFrame(_gl);
-      _fps = perfStats.fps;
-      _cpuFrameTimeMs = perfStats.cpuMsAvg;
-      _gpuFrameTimeMs = perfStats.gpuMsAvg;
+      if (_perf != null) {
+        final perfStats = _perf!.endFrame(_gl);
+        _fps = perfStats.fps;
+        _cpuFrameTimeMs = perfStats.cpuMsAvg;
+        _gpuFrameTimeMs = perfStats.gpuMsAvg;
+      }
       _lastFrameTime = DateTime.timestamp();
     } catch (_) {
       // Recovery path on GL/Program invalidation
@@ -413,7 +418,7 @@ class TextureGaussianRenderer {
     }
 
     try {
-      _perf.dispose();
+      _perf?.dispose();
     } catch (e) {
       debugPrint('Warning: error disposing profiler: $e');
     }
@@ -840,7 +845,7 @@ class TextureGaussianRenderer {
 
     //old profiler holds queries & GL pointers from the previous context.
     try {
-      _perf.dispose();
+      _perf?.dispose();
     } catch (_) {}
 
     // Recreate profiler with same settings as original setup
@@ -854,6 +859,8 @@ class TextureGaussianRenderer {
       } else {
         _profilerType = 'CPU';
       }
+    } else {
+      _perf = null;
     }
 
     // Re-upload content if available

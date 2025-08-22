@@ -31,7 +31,7 @@ class PerfStats {
 abstract class PerfProfiler {
   /// Creates the best available profiler for the given WebGL context.
   factory PerfProfiler.auto(dynamic gl) =>
-      DisjointQueryGpuProfiler.tryCreate(gl) ??
+      DisjointQueryGpuProfiler.tryCreate(gl.gl) ?? // pass the gl binding
       GlFinishSamplerProfiler.tryCreate(gl) ??
       CpuOnlyProfiler();
 

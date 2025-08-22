@@ -33,7 +33,8 @@ class RenderStats {
 
   /// CPU-based frames per second (smoothed with EWMA).
   ///
-  /// This measures the total frame time from start to finish on the main thread.
+  /// This measures the total frame time from start to finish on the main
+  /// thread.
   final double fps;
 
   /// Number of Gaussian splat vertices rendered in the last frame.
@@ -179,7 +180,7 @@ class TextureGaussianRenderer {
     _camera = camera;
     _updateViewMatrix();
     _updateProjectionMatrix();
-    _needDepthSort = true; 
+    _needDepthSort = true;
   }
 
   // Life‑cycle
@@ -201,6 +202,7 @@ class TextureGaussianRenderer {
     required double height,
     required String vertexShaderCode,
     required String fragmentShaderCode,
+    bool enableProfiling = false,
   }) async {
     assert(width > 0 && height > 0, 'Viewport must be non‑zero');
 
@@ -222,15 +224,17 @@ class TextureGaussianRenderer {
     await _createBuffers();
     _updateProjectionMatrix();
 
-    _perf = PerfProfiler.auto(_gl);
+    if (enableProfiling) {
+      _perf = PerfProfiler.auto(_gl);
 
-    // Determine profiler type for display
-    if (_perf is DisjointQueryGpuProfiler) {
-      _profilerType = 'GPU';
-    } else if (_perf is GlFinishSamplerProfiler) {
-      _profilerType = 'Sampled';
-    } else {
-      _profilerType = 'CPU';
+      // Determine profiler type for display
+      if (_perf is DisjointQueryGpuProfiler) {
+        _profilerType = 'GPU';
+      } else if (_perf is GlFinishSamplerProfiler) {
+        _profilerType = 'Sampled';
+      } else {
+        _profilerType = 'CPU';
+      }
     }
   }
 
@@ -248,7 +252,7 @@ class TextureGaussianRenderer {
 
     // Guard readiness up front
     if (_program == null || _camera == null) return;
-    
+
     _inFrame = true;
     try {
       _perf.beginFrame();
@@ -347,7 +351,8 @@ class TextureGaussianRenderer {
         _gl = newGl;
         _targetTexture = newTexture;
 
-        // Since the RenderingContext wrapper instance changed, rebuild GL objects
+        // Since the RenderingContext wrapper instance changed, 
+        // rebuild GL objects
         _disposeGlResourcesForContext(previousGl);
         await _recoverFromContextLoss();
 
@@ -542,7 +547,7 @@ class TextureGaussianRenderer {
 
     _gl.bufferData(WebGL.ARRAY_BUFFER, _scratchDepthArray, WebGL.DYNAMIC_DRAW);
     _vertexCount = result.vertexCount;
-    _needDepthSort = false; 
+    _needDepthSort = false;
   }
 
   // Splat texture upload
@@ -636,9 +641,9 @@ class TextureGaussianRenderer {
     _gl
       ..bindTexture(WebGL.TEXTURE_2D, _texture)
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE,)
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE,)
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
       ..texImage2D(
@@ -821,7 +826,7 @@ class TextureGaussianRenderer {
       _disposeGlResourcesForContext(_gl);
     } catch (_) {}
 
-    // Rebuild GPU state; if this fails once, leave things null and let next 
+    // Rebuild GPU state; if this fails once, leave things null and let next
     //frame retry.
     try {
       await _compileShaders();
@@ -837,13 +842,18 @@ class TextureGaussianRenderer {
     try {
       _perf.dispose();
     } catch (_) {}
-    _perf = PerfProfiler.auto(_gl);
-    if (_perf is DisjointQueryGpuProfiler) {
-      _profilerType = 'GPU';
-    } else if (_perf is GlFinishSamplerProfiler) {
-      _profilerType = 'Sampled';
-    } else {
-      _profilerType = 'CPU';
+
+    // Recreate profiler with same settings as original setup
+    final enableProfiling = _profilerType != null;
+    if (enableProfiling) {
+      _perf = PerfProfiler.auto(_gl);
+      if (_perf is DisjointQueryGpuProfiler) {
+        _profilerType = 'GPU';
+      } else if (_perf is GlFinishSamplerProfiler) {
+        _profilerType = 'Sampled';
+      } else {
+        _profilerType = 'CPU';
+      }
     }
 
     // Re-upload content if available

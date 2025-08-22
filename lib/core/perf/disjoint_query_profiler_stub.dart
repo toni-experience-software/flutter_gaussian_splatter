@@ -1,8 +1,8 @@
 import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
-import 'package:flutter_gaussian_splatter/core/perf/cpu_only_profiler.dart';
 
 /// Web stub: timer queries not provided here — force fallback.
 class DisjointQueryGpuProfiler implements PerfProfiler {
+  /// Stub implementation
   static DisjointQueryGpuProfiler? tryCreate(dynamic gl) => null;
 
   @override

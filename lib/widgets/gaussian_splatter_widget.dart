@@ -22,10 +22,12 @@ class GaussianSplatterWidget extends StatefulWidget {
   ///
   /// The [assetPath] must point to a valid .ply file or processed splat data.
   /// Set [showStats] to true to display rendering statistics overlay.
+  /// Set [enableProfiling] to true to enable detailed performance profiling
   const GaussianSplatterWidget({
     required this.assetPath,
     super.key,
     this.showStats = false,
+    this.enableProfiling = false,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -33,6 +35,11 @@ class GaussianSplatterWidget extends StatefulWidget {
 
   /// Whether to show the performance statistics overlay.
   final bool showStats;
+
+  /// Whether to enable detailed performance profiling.
+  /// When false (default), uses CPU-only profiling for optimal performance.
+  /// When true, enables GPU timing if supported by the platform.
+  final bool enableProfiling;
 
   @override
   State<GaussianSplatterWidget> createState() => _GaussianSplatterWidgetState();
@@ -105,7 +112,6 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     _theta = math.atan2(pos.x, pos.z);
     _phi = math.acos(pos.y / _orbitDistance);
 
-
     try {
       await _renderer.initialize();
       _renderer.camera = camera;
@@ -122,6 +128,7 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
         height: validSize.height,
         vertexShaderCode: vertexShaderCode,
         fragmentShaderCode: fragmentShaderCode,
+        enableProfiling: widget.enableProfiling,
       );
 
       texture = _renderer.targetTexture;
@@ -199,15 +206,19 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       setState(() {
         // Build performance info with proper context
         final perfInfo = StringBuffer()
-        ..writeln('Performance [${stats.profilerType ?? 'Unknown'}]:')
-        ..writeln('  CPU: ${stats.fps.toStringAsFixed(1)} FPS (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)');
-        
+          ..writeln('Performance [${stats.profilerType ?? 'Unknown'}]:')
+          ..writeln(
+            '  CPU: ${stats.fps.toStringAsFixed(1)} FPS (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)',
+          );
+
         if (stats.hasGpuTiming && stats.gpuFps != null) {
-          perfInfo.writeln('  GPU: ${stats.gpuFps!.toStringAsFixed(1)} FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)');
+          perfInfo.writeln(
+            '  GPU: ${stats.gpuFps!.toStringAsFixed(1)} FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)',
+          );
         } else {
           perfInfo.writeln('  GPU: Timing unavailable');
         }
-        
+
         _statsText = '''$perfInfo
 Rendering:
   Gaussian Splats: ${stats.vertexCount}
@@ -231,17 +242,16 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     if (textureId < 0) return;
 
     if (details.scale != 1.0) {
-      final zoomDelta = (details.scale - 1.0) *
-          -_kZoomSensitivity ;
+      final zoomDelta = (details.scale - 1.0) * -_kZoomSensitivity;
       _zoomCamera(zoomDelta);
     }
 
     if (details.focalPointDelta != Offset.zero) {
       final size = context.size ?? Size.zero;
-      final normalizedDx = (_kPanSensitivity * details.focalPointDelta.dx) /
-          size.width ;
-      final normalizedDy = (_kPanSensitivity * details.focalPointDelta.dy) /
-          size.height ;
+      final normalizedDx =
+          (_kPanSensitivity * details.focalPointDelta.dx) / size.width;
+      final normalizedDy =
+          (_kPanSensitivity * details.focalPointDelta.dy) / size.height;
       _orbitCamera(normalizedDx, normalizedDy);
     }
   }
@@ -261,7 +271,7 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     final newPosition = vm.Vector3(newX, newY, newZ);
 
     final forward = (-newPosition).normalized();
-    final up = vm.Vector3(0, -1, 0);  // Flip Y-axis to match coordinate system
+    final up = vm.Vector3(0, -1, 0); // Flip Y-axis to match coordinate system
     final right = up.cross(forward).normalized();
     final trueUp = forward.cross(right).normalized();
     final newRotation = vm.Matrix3.columns(right, trueUp, forward);
@@ -284,7 +294,7 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     final newPosition = vm.Vector3(newX, newY, newZ);
 
     final forward = (-newPosition).normalized();
-    final up = vm.Vector3(0, -1, 0);  // Flip Y-axis to match coordinate system
+    final up = vm.Vector3(0, -1, 0); // Flip Y-axis to match coordinate system
     final right = up.cross(forward).normalized();
     final trueUp = forward.cross(right).normalized();
     final newRotation = vm.Matrix3.columns(right, trueUp, forward);

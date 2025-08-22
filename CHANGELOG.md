@@ -1,3 +1,11 @@
+## 0.2.1 - 2025-08-22
+
+* feat: make profiling optional for optimal performance (defaults to disabled)
+* fix: improved FPS measurement accuracy with proper frame timing
+* fix: GPU profiling cleanup and optimization
+* fix: Resize function
+
+
 ## 0.2.0 - 2025-08-21
 
 * feat: better texture packing with optimized atlas layout (5 texels per splat)

@@ -19,10 +19,11 @@ float unpackHalf(uint half_val) {
     uint exponent = (half_val >> 10u) & 0x001Fu;
     uint mantissa = half_val & 0x03FFu;
 
-    if (exponent == 0u) {
-        if (mantissa == 0u) return sign == 1u ? -0.0f : 0.0f;
+    if(exponent == 0u) {
+        if(mantissa == 0u)
+            return sign == 1u ? -0.0f : 0.0f;
         return float(sign == 1u ? -1 : 1) * float(mantissa) * exp2(-24.0f);
-    } else if (exponent == 31u) {
+    } else if(exponent == 31u) {
         return sign == 1u ? -1.0f / 0.0f : 1.0f / 0.0f;
     }
     float result = float(mantissa | 0x0400u) * exp2(float(int(exponent) - 15 - 10));
@@ -38,17 +39,16 @@ vec4 unpack8888s(in uint bits) {
 }
 
 vec4 unpack8888(uint bits) {
-    return vec4(float(bits >> 24u) / 255.0f, float((bits >> 16u) & 0xffu) / 255.0f,
-                float((bits >> 8u) & 0xffu) / 255.0f, float(bits & 0xffu) / 255.0f);
+    return vec4(float(bits >> 24u) / 255.0f, float((bits >> 16u) & 0xffu) / 255.0f, float((bits >> 8u) & 0xffu) / 255.0f, float(bits & 0xffu) / 255.0f);
 }
 
 // Decodes quaternion from packed byte format
 vec4 decodeQuaternion(uint packedQuat) {
-    float x = float(packedQuat & 0xffu) - 128.0;
-    float y = float((packedQuat >> 8u) & 0xffu) - 128.0;
-    float z = float((packedQuat >> 16u) & 0xffu) - 128.0;
-    float w = float((packedQuat >> 24u) & 0xffu) - 128.0;
-    float invLen = inversesqrt(max(1e-12, x*x + y*y + z*z + w*w));
+    float x = float(packedQuat & 0xffu) - 128.0f;
+    float y = float((packedQuat >> 8u) & 0xffu) - 128.0f;
+    float z = float((packedQuat >> 16u) & 0xffu) - 128.0f;
+    float w = float((packedQuat >> 24u) & 0xffu) - 128.0f;
+    float invLen = inversesqrt(max(1e-12f, x * x + y * y + z * z + w * w));
     return vec4(x, y, z, w) * invLen;
 }
 
@@ -61,12 +61,9 @@ void readSHData_reference(int idx, out vec3 sh[15], out float scale) {
     highp vec4 f_sh_1 = texelFetch(u_texture, base_uv + ivec2(3, 0), 0);
     highp vec4 f_sh_2 = texelFetch(u_texture, base_uv + ivec2(4, 0), 0);
 
-    uvec4 shData0 = uvec4(floatBitsToUint(f_sh_0.x), floatBitsToUint(f_sh_0.y),
-                          floatBitsToUint(f_sh_0.z), floatBitsToUint(f_sh_0.w));
-    uvec4 shData1 = uvec4(floatBitsToUint(f_sh_1.x), floatBitsToUint(f_sh_1.y),
-                          floatBitsToUint(f_sh_1.z), floatBitsToUint(f_sh_1.w));
-    uvec4 shData2 = uvec4(floatBitsToUint(f_sh_2.x), floatBitsToUint(f_sh_2.y),
-                          floatBitsToUint(f_sh_2.z), floatBitsToUint(f_sh_2.w));
+    uvec4 shData0 = uvec4(floatBitsToUint(f_sh_0.x), floatBitsToUint(f_sh_0.y), floatBitsToUint(f_sh_0.z), floatBitsToUint(f_sh_0.w));
+    uvec4 shData1 = uvec4(floatBitsToUint(f_sh_1.x), floatBitsToUint(f_sh_1.y), floatBitsToUint(f_sh_1.z), floatBitsToUint(f_sh_1.w));
+    uvec4 shData2 = uvec4(floatBitsToUint(f_sh_2.x), floatBitsToUint(f_sh_2.y), floatBitsToUint(f_sh_2.z), floatBitsToUint(f_sh_2.w));
 
     vec4 r0 = unpack8888s(shData0.x);
     vec4 r1 = unpack8888s(shData0.y);
@@ -81,16 +78,16 @@ void readSHData_reference(int idx, out vec3 sh[15], out float scale) {
     vec4 b2 = unpack8888s(shData2.z);
     vec4 b3 = unpack8888s(shData2.w);
 
-    sh[0]  = vec3(r0.x, g0.x, b0.x);
-    sh[1]  = vec3(r0.y, g0.y, b0.y);
-    sh[2]  = vec3(r0.z, g0.z, b0.z);
-    sh[3]  = vec3(r0.w, g0.w, b0.w);
-    sh[4]  = vec3(r1.x, g1.x, b1.x);
-    sh[5]  = vec3(r1.y, g1.y, b1.y);
-    sh[6]  = vec3(r1.z, g1.z, b1.z);
-    sh[7]  = vec3(r1.w, g1.w, b1.w);
-    sh[8]  = vec3(r2.x, g2.x, b2.x);
-    sh[9]  = vec3(r2.y, g2.y, b2.y);
+    sh[0] = vec3(r0.x, g0.x, b0.x);
+    sh[1] = vec3(r0.y, g0.y, b0.y);
+    sh[2] = vec3(r0.z, g0.z, b0.z);
+    sh[3] = vec3(r0.w, g0.w, b0.w);
+    sh[4] = vec3(r1.x, g1.x, b1.x);
+    sh[5] = vec3(r1.y, g1.y, b1.y);
+    sh[6] = vec3(r1.z, g1.z, b1.z);
+    sh[7] = vec3(r1.w, g1.w, b1.w);
+    sh[8] = vec3(r2.x, g2.x, b2.x);
+    sh[9] = vec3(r2.y, g2.y, b2.y);
     sh[10] = vec3(r2.z, g2.z, b2.z);
     sh[11] = vec3(r2.w, g2.w, b2.w);
     sh[12] = vec3(r3.x, g3.x, b3.x);
@@ -112,7 +109,9 @@ void clipCorner(inout vec2 majorAxis, inout vec2 minorAxis, inout vec2 corner_uv
     corner_uv *= clip;
 }
 
-vec3 prepareOutputFromGamma(vec3 gammaColor) { return gammaColor; }
+vec3 prepareOutputFromGamma(vec3 gammaColor) {
+    return gammaColor;
+}
 
 // ---------- SH eval unchanged ----------
 #define SH_C1 0.4886025119029199f
@@ -132,26 +131,24 @@ vec3 prepareOutputFromGamma(vec3 gammaColor) { return gammaColor; }
 vec3 evalSH_reference(in vec3 dir, in vec3 sh[15]) {
     float x = dir.x, y = dir.y, z = dir.z;
     vec3 result = SH_C1 * (-sh[0] * y + sh[1] * z - sh[2] * x);
-    float xx = x*x, yy = y*y, zz = z*z, xy = x*y, yz = y*z, xz = x*z;
-    result += sh[3]*(SH_C2_0*xy) + sh[4]*(SH_C2_1*yz) +
-              sh[5]*(SH_C2_2*(2.0*zz - xx - yy)) +
-              sh[6]*(SH_C2_3*xz) +
-              sh[7]*(SH_C2_4*(xx - yy));
-    result += sh[8]*(SH_C3_0*y*(3.0*xx - yy)) +
-              sh[9]*(SH_C3_1*xy*z) +
-              sh[10]*(SH_C3_2*y*(4.0*zz - xx - yy)) +
-              sh[11]*(SH_C3_3*z*(2.0*zz - 3.0*xx - 3.0*yy)) +
-              sh[12]*(SH_C3_4*x*(4.0*zz - xx - yy)) +
-              sh[13]*(SH_C3_5*z*(xx - yy)) +
-              sh[14]*(SH_C3_6*x*(xx - 3.0*yy));
+    float xx = x * x, yy = y * y, zz = z * z, xy = x * y, yz = y * z, xz = x * z;
+    result += sh[3] * (SH_C2_0 * xy) + sh[4] * (SH_C2_1 * yz) +
+        sh[5] * (SH_C2_2 * (2.0f * zz - xx - yy)) +
+        sh[6] * (SH_C2_3 * xz) +
+        sh[7] * (SH_C2_4 * (xx - yy));
+    result += sh[8] * (SH_C3_0 * y * (3.0f * xx - yy)) +
+        sh[9] * (SH_C3_1 * xy * z) +
+        sh[10] * (SH_C3_2 * y * (4.0f * zz - xx - yy)) +
+        sh[11] * (SH_C3_3 * z * (2.0f * zz - 3.0f * xx - 3.0f * yy)) +
+        sh[12] * (SH_C3_4 * x * (4.0f * zz - xx - yy)) +
+        sh[13] * (SH_C3_5 * z * (xx - yy)) +
+        sh[14] * (SH_C3_6 * x * (xx - 3.0f * yy));
     return result;
 }
 
 mat3 quatToMat3(vec4 R) {
     float x = R.x, y = R.y, z = R.z, w = R.w;
-    return mat3(1.0f - 2.0f*(z*z + w*w), 2.0f*(y*z + x*w), 2.0f*(y*w - x*z),
-                2.0f*(y*z - x*w), 1.0f - 2.0f*(y*y + w*w), 2.0f*(z*w + x*y),
-                2.0f*(y*w + x*z), 2.0f*(z*w - y*x), 1.0f - 2.0f*(y*y + z*z));
+    return mat3(1.0f - 2.0f * (z * z + w * w), 2.0f * (y * z + x * w), 2.0f * (y * w - x * z), 2.0f * (y * z - x * w), 1.0f - 2.0f * (y * y + w * w), 2.0f * (z * w + x * y), 2.0f * (y * w + x * z), 2.0f * (z * w - y * x), 1.0f - 2.0f * (y * y + z * z));
 }
 
 void main() {
@@ -180,7 +177,7 @@ void main() {
     vec4 cam_view_space = view * vec4(worldPos, 1.0f);
     vec4 pos2d = projection * cam_view_space;
 
-    if (-cam_view_space.z > 0.0f) {
+    if(-cam_view_space.z > 0.0f) {
         gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
         return;
     }
@@ -191,9 +188,9 @@ void main() {
     // --- covariance without mat-muls ---
     // M = R * S  -> scale the *columns* of R by scale.{x,y,z}
     mat3 Rm = quatToMat3(quat);
-    mat3 M  = mat3(Rm[0] * scale.x,   // column 0
-                   Rm[1] * scale.y,   // column 1
-                   Rm[2] * scale.z);  // column 2
+    mat3 M = mat3(Rm[0] * scale.x,   // column 0
+    Rm[1] * scale.y,   // column 1
+    Rm[2] * scale.z);  // column 2
 
     // rows of M (since GLSL is column-major)
     vec3 r0 = vec3(M[0][0], M[1][0], M[2][0]);
@@ -207,53 +204,60 @@ void main() {
     float c12 = dot(r1, r2);
     float c22 = dot(r2, r2);
 
-    mat3 Vrk = 4.0 * mat3(
-        c00, c01, c02,
-        c01, c11, c12,
-        c02, c12, c22
-    );
+    mat3 Vrk = 4.0f * mat3(c00, c01, c02, c01, c11, c12, c02, c12, c22);
 
-    mat3 J = mat3(focal.x / cam_view_space.z, 0.f, -(focal.x * cam_view_space.x) / (cam_view_space.z * cam_view_space.z),
-                  0.f, focal.y / cam_view_space.z, -(focal.y * cam_view_space.y) / (cam_view_space.z * cam_view_space.z),
-                  0.f, 0.f, 0.f);
+   // --- drop-in replacement: cheaper Jacobian, eigen, axes, cull, and dir_sh reuse ---
+
+// reuse z reciprocals instead of dividing multiple times
+    float invz = 1.0f / cam_view_space.z;
+    float invz2 = invz * invz;
+
+// same Jacobian as before, but with reused terms
+    float Jx = focal.x * invz;
+    float Jy = focal.y * invz;
+
+    mat3 J = mat3(Jx, 0.0f, -(focal.x * cam_view_space.x) * invz2, 0.0f, Jy, -(focal.y * cam_view_space.y) * invz2, 0.0f, 0.0f, 0.0f);
+
+// same T and cov2d
     mat3 T = transpose(mat3(view)) * J;
     mat3 cov2d = transpose(T) * Vrk * T;
 
-    float diagonal1 = cov2d[0][0] + 0.3f;
-    float offDiagonal = cov2d[0][1];
-    float diagonal2 = cov2d[1][1] + 0.3f;
+    // eigenvalues (unchanged math)
+    float d1 = cov2d[0][0] + 0.3f;
+    float od = cov2d[0][1];
+    float d2 = cov2d[1][1] + 0.3f;
 
-    float mid = 0.5f * (diagonal1 + diagonal2);
-    float radius_val = length(vec2((diagonal1 - diagonal2) * 0.5f, offDiagonal));
+    float mid = 0.5f * (d1 + d2);
+    float rad = length(vec2((d1 - d2) * 0.5f, od));
+    float l1 = mid + rad;
+    float l2 = max(mid - rad, 0.1f);
 
-    float lambda1 = mid + radius_val;
-    float lambda2 = max(mid - radius_val, 0.1f);
+    // precompute radii once (saves 2 extra sqrt calls)
+    float s1 = sqrt(max(0.0f, 2.0f * l1));
+    float s2 = sqrt(max(0.0f, 2.0f * l2));
 
-    if (sqrt(2.0f * lambda1) < 2.0f && sqrt(2.0f * lambda2) < 2.0f) {
+    // early out: both axes smaller than 2 px
+    if(s1 < 2.0f && s2 < 2.0f) {
         gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
         return;
     }
 
-    vec2 diagonalVector = normalize(vec2(offDiagonal, lambda1 - diagonal1));
-    vec2 majorAxis = min(sqrt(2.0f * lambda1), 1024.0f) * diagonalVector;
-    vec2 minorAxis = min(sqrt(2.0f * lambda2), 1024.0f) * vec2(diagonalVector.y, -diagonalVector.x);
+    vec2 diagVec = normalize(vec2(od, l1 - d1));
+    vec2 majorAxis = min(s1, 1024.0f) * diagVec;
+    vec2 minorAxis = min(s2, 1024.0f) * vec2(diagVec.y, -diagVec.x);
 
+    // same frustum guard as your version
     vec2 c = pos2d.ww / viewport;
     float margin = 2.0f;
     float max_axis_length = max(length(majorAxis), length(minorAxis));
-    if (any(greaterThan(abs(pos2d.xy) - vec2(max_axis_length * margin) * c, pos2d.ww))) {
+    if(any(greaterThan(abs(pos2d.xy) - vec2(max_axis_length * margin) * c, pos2d.ww))) {
         gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
         return;
     }
 
     // Color
     uint packedColorBits = floatBitsToUint(p1_data.w);
-    vec4 base_color_srgb = vec4(
-        float(packedColorBits & 0xffu),
-        float((packedColorBits >> 8u) & 0xffu),
-        float((packedColorBits >> 16u) & 0xffu),
-        float((packedColorBits >> 24u) & 0xffu)
-    ) / 255.0f;
+    vec4 base_color_srgb = vec4(float(packedColorBits & 0xffu), float((packedColorBits >> 8u) & 0xffu), float((packedColorBits >> 16u) & 0xffu), float((packedColorBits >> 24u) & 0xffu)) / 255.0f;
 
     vec3 base_color_linear = base_color_srgb.rgb;
 

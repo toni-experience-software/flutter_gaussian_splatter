@@ -48,18 +48,13 @@ vec4 decodeQuaternion(uint packedQuat) {
     float y = float((packedQuat >> 8u) & 0xffu) - 128.0;
     float z = float((packedQuat >> 16u) & 0xffu) - 128.0;
     float w = float((packedQuat >> 24u) & 0xffu) - 128.0;
-
-    float len = sqrt(x*x + y*y + z*z + w*w);
-    if (len > 0.0) {
-        float invLen = 1.0 / len;
-        return vec4(x * invLen, y * invLen, z * invLen, w * invLen);
-    }
-    return vec4(0.0, 0.0, 0.0, 1.0);
+    float invLen = inversesqrt(max(1e-12, x*x + y*y + z*z + w*w));
+    return vec4(x, y, z, w) * invLen;
 }
 
 // ---------- SH read (only base_uv changed to 5-texel layout) ----------
 void readSHData_reference(int idx, out vec3 sh[15], out float scale) {
-    // CHANGED: (idx & 0x1ff) * 5 , idx >> 9
+    //(idx & 0x1ff) * 5 , idx >> 9
     ivec2 base_uv = ivec2((idx & 0x1ff) * 5, idx >> 9);
 
     highp vec4 f_sh_0 = texelFetch(u_texture, base_uv + ivec2(2, 0), 0);
@@ -156,29 +151,27 @@ mat3 quatToMat3(vec4 R) {
     float x = R.x, y = R.y, z = R.z, w = R.w;
     return mat3(1.0f - 2.0f*(z*z + w*w), 2.0f*(y*z + x*w), 2.0f*(y*w - x*z),
                 2.0f*(y*z - x*w), 1.0f - 2.0f*(y*y + w*w), 2.0f*(z*w + x*y),
-                2.0f*(y*w + x*z), 2.0f*(z*w - x*y), 1.0f - 2.0f*(y*y + z*z));
+                2.0f*(y*w + x*z), 2.0f*(z*w - y*x), 1.0f - 2.0f*(y*y + z*z));
 }
 
 void main() {
     int idx = int(index);
 
-    // CHANGED: base_uv for 5-texel layout
+    // base_uv for 5-texel layout
     ivec2 base_uv = ivec2((idx & 0x1ff) * 5, idx >> 9);
 
-    // Fetch P0 and P1 with new meanings
-    highp vec4 p0_data = texelFetch(u_texture, base_uv + ivec2(0, 0), 0); // pos.xyz + quat (packed)
-    highp vec4 p1_data = texelFetch(u_texture, base_uv + ivec2(1, 0), 0); // scale.xyz + color (packed)
+    // Fetch P0 and P1 (pos/quat, scale/color)
+    highp vec4 p0_data = texelFetch(u_texture, base_uv + ivec2(0, 0), 0); // pos.xyz + quat (packed u32)
+    highp vec4 p1_data = texelFetch(u_texture, base_uv + ivec2(1, 0), 0); // scale.xyz + color (packed u32)
 
     vec3 worldPos = p0_data.xyz;
 
-    // CHANGED: quaternion is now in P0.w
     uint packedQuat = floatBitsToUint(p0_data.w);
     vec4 quat = decodeQuaternion(packedQuat);
 
-    // CHANGED: scales are still P1.xyz
     vec3 scale = p1_data.xyz;
 
-    // Read SH (same function, but its base_uv already updated)
+    // SH
     vec3 sh[15];
     float shScale;
     readSHData_reference(idx, sh, shScale);
@@ -195,13 +188,30 @@ void main() {
     pos2d.z = clamp(pos2d.z, -abs(pos2d.w), abs(pos2d.w));
     vec2 screenPos = pos2d.xy / pos2d.w;
 
-    // Covariance (unchanged)
-    mat3 R = quatToMat3(quat);
-    mat3 S = mat3(scale.x, 0.0, 0.0,
-                  0.0, scale.y, 0.0,
-                  0.0, 0.0, scale.z);
-    mat3 M = R * S;
-    mat3 Vrk = 4.0 * (M * transpose(M));
+    // --- covariance without mat-muls ---
+    // M = R * S  -> scale the *columns* of R by scale.{x,y,z}
+    mat3 Rm = quatToMat3(quat);
+    mat3 M  = mat3(Rm[0] * scale.x,   // column 0
+                   Rm[1] * scale.y,   // column 1
+                   Rm[2] * scale.z);  // column 2
+
+    // rows of M (since GLSL is column-major)
+    vec3 r0 = vec3(M[0][0], M[1][0], M[2][0]);
+    vec3 r1 = vec3(M[0][1], M[1][1], M[2][1]);
+    vec3 r2 = vec3(M[0][2], M[1][2], M[2][2]);
+
+    float c00 = dot(r0, r0);
+    float c01 = dot(r0, r1);
+    float c02 = dot(r0, r2);
+    float c11 = dot(r1, r1);
+    float c12 = dot(r1, r2);
+    float c22 = dot(r2, r2);
+
+    mat3 Vrk = 4.0 * mat3(
+        c00, c01, c02,
+        c01, c11, c12,
+        c02, c12, c22
+    );
 
     mat3 J = mat3(focal.x / cam_view_space.z, 0.f, -(focal.x * cam_view_space.x) / (cam_view_space.z * cam_view_space.z),
                   0.f, focal.y / cam_view_space.z, -(focal.y * cam_view_space.y) / (cam_view_space.z * cam_view_space.z),
@@ -236,7 +246,7 @@ void main() {
         return;
     }
 
-    // ---------- Color (CHANGED: now in P1.w) ----------
+    // Color
     uint packedColorBits = floatBitsToUint(p1_data.w);
     vec4 base_color_srgb = vec4(
         float(packedColorBits & 0xffu),
@@ -247,7 +257,7 @@ void main() {
 
     vec3 base_color_linear = base_color_srgb.rgb;
 
-    // ---------- SH direction exactly as before (world-space) ----------
+    // SH direction (unchanged)
     vec4 centerView = view * vec4(worldPos, 1.0f);
     vec3 center_view = centerView.xyz / centerView.w;
     mat4 center_modelView = view;
@@ -255,7 +265,7 @@ void main() {
 
     // SH eval + combine (DC term is in base color)
     vec3 sh_lighting = evalSH_reference(dir_sh, sh);
-    vec3 sum_linear = base_color_linear+ sh_lighting;
+    vec3 sum_linear = base_color_linear + sh_lighting;
     vec3 final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0f)));
 
     // Corner clipping & final position

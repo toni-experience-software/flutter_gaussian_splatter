@@ -192,6 +192,7 @@ class TextureGaussianRenderer {
   Future<void> enableBackgroundFromAsset(String assetPath) async {
     _bg ??= SkydomeBackground(_gl);
     await _bg!.setImageFromAsset(assetPath);
+    _bg?.setYawPitchDegrees(90, 0); // pitch only → flips sky/ground
     _bgAssetPath = assetPath;
   }
 
@@ -202,18 +203,18 @@ class TextureGaussianRenderer {
     _bgAssetPath = null;
   }
 
-  Float32List _invViewRot3x3() {
-    final m = _viewMatrix.storage; // column-major
-    final m00 = m[0], m01 = m[4], m02 = m[8];
-    final m10 = m[1], m11 = m[5], m12 = m[9];
-    final m20 = m[2], m21 = m[6], m22 = m[10];
-    // inv(R) = R^T; pack column-major
-    return Float32List.fromList([
-      m00, m01, m02, // col0
-      m10, m11, m12, // col1
-      m20, m21, m22, // col2
-    ]);
-  }
+Float32List _invViewRot3x3() {
+  final R = _camera!.rotation; // camera->world
+  return Float32List.fromList([
+    // col0
+    R.row0.x, R.row1.x, R.row2.x,
+    // col1
+    R.row0.y, R.row1.y, R.row2.y,
+    // col2
+    R.row0.z, R.row1.z, R.row2.z,
+  ]);
+}
+
 
   // Life‑cycle
 
@@ -766,7 +767,6 @@ class TextureGaussianRenderer {
         WebGL.ONE_MINUS_SRC_ALPHA,
       )
       ..blendEquationSeparate(WebGL.FUNC_ADD, WebGL.FUNC_ADD)
-
       ..useProgram(_program);
 
     if (_uProjection != null) {
@@ -933,6 +933,7 @@ class TextureGaussianRenderer {
         _bg!.dispose();
       } catch (_) {}
       _bg = SkydomeBackground(_gl);
+      _bg?.setYawPitchDegrees(0, 0); // pitch only → flips sky/ground
       if (_bgAssetPath != null) {
         try {
           await _bg!.setImageFromAsset(_bgAssetPath!);

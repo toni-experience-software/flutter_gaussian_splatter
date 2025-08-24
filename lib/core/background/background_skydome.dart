@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter/foundation.dart';
 
@@ -12,10 +14,18 @@ class SkydomeBackground {
   final RenderingContext _gl;
 
   Program? _prog;
-  UniformLocation? _uBg, _uViewport, _uFocal, _uInvViewRot;
+  UniformLocation? _uBg;
+  UniformLocation? _uViewport;
+  UniformLocation? _uFocal;
+  UniformLocation? _uInvViewRot;
   WebGLTexture? _tex;
-  int _imgW = 0, _imgH = 0;
+  int _imgW = 0;
+  int _imgH = 0;
   bool _ready = false;
+  UniformLocation? _uBgRot;
+  Float32List _bgRot = Float32List.fromList([
+    1, 0, 0, 0, 1, 0, 0, 0, 1 // identity
+  ]);
 
   bool get isReady => _ready;
 
@@ -23,33 +33,36 @@ class SkydomeBackground {
 
   /// Loads an image from the asset bundle and uploads it as a texture.
   Future<void> setImageFromAsset(String assetPath) async {
-  _ensureProgram();
-  _tex ??= _gl.createTexture();
-  _gl
-    ..bindTexture(WebGL.TEXTURE_2D, _tex)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.LINEAR_MIPMAP_LINEAR)
-    ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.LINEAR)
-    ..pixelStorei(WebGL.UNPACK_ALIGNMENT, 1);
+    _ensureProgram();
+    _tex ??= _gl.createTexture();
+    _gl
+      ..bindTexture(WebGL.TEXTURE_2D, _tex)
+      ..texParameteri(
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
+      ..texParameteri(
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
+      ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER,
+          WebGL.LINEAR_MIPMAP_LINEAR)
+      ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.LINEAR)
+      ..pixelStorei(WebGL.UNPACK_ALIGNMENT, 1);
 
-  // IMPORTANT: override the bad defaults (RGBA32UI/UNSIGNED_INT)
-  await _gl.texImage2DfromAsset(
-    WebGL.TEXTURE_2D,
-    assetPath,
-    internalformat: WebGL.RGBA,
-    format: WebGL.RGBA,
-    type: WebGL.UNSIGNED_BYTE,
-  );
+    // IMPORTANT: override the bad defaults (RGBA32UI/UNSIGNED_INT)
+    await _gl.texImage2DfromAsset(
+      WebGL.TEXTURE_2D,
+      assetPath,
+      internalformat: WebGL.RGBA,
+      type: WebGL.UNSIGNED_BYTE,
+    );
 
-  // Query width/height if you need them later (optional)
-  // If not easily available, you can ignore _imgW/_imgH for assets.
-  _gl.generateMipmap(WebGL.TEXTURE_2D);
-  _ready = true;
-}
+    // Query width/height if you need them later (optional)
+    // If not easily available, you can ignore _imgW/_imgH for assets.
+    _gl.generateMipmap(WebGL.TEXTURE_2D);
+    _ready = true;
+  }
 
   /// Draws the skydome to the current framebuffer. Call before enabling blending.
-  void draw(int width, int height, double fx, double fy, Float32List invViewRot3x3) {
+  void draw(
+      int width, int height, double fx, double fy, Float32List invViewRot3x3) {
     if (!_ready || _prog == null || _tex == null) return;
 
     // State for opaque background
@@ -58,26 +71,50 @@ class SkydomeBackground {
       ..disable(WebGL.BLEND)
       ..disable(WebGL.DEPTH_TEST)
       ..activeTexture(WebGL.TEXTURE0)
-      ..bindTexture(WebGL.TEXTURE_2D, _tex);
+      ..bindTexture(WebGL.TEXTURE_2D, _tex)
 
-    // Uniforms
-    _gl
+      // Uniforms
+
       ..uniform1i(_uBg!, 0)
       ..uniform2f(_uViewport!, width.toDouble(), height.toDouble())
       ..uniform2f(_uFocal!, fx, fy)
-      ..uniformMatrix3fv(_uInvViewRot!, false, invViewRot3x3);
+      ..uniformMatrix3fv(_uInvViewRot!, false, invViewRot3x3)
+      ..uniformMatrix3fv(_uBgRot!, false, _bgRot)
 
-    // Fullscreen triangle (gl_VertexID; no VBOs)
-    _gl.drawArrays(WebGL.TRIANGLES, 0, 3);
+      // Fullscreen triangle (gl_VertexID; no VBOs)
+      ..drawArrays(WebGL.TRIANGLES, 0, 3);
   }
 
+  /// Set yaw pitch
+  void setYawPitchDegrees(double yawDeg, double pitchDeg) {
+    final y = yawDeg * math.pi / 180.0; // yaw around +Y (left/right)
+    final p = pitchDeg * math.pi / 180.0; // pitch around +X (up/down)
+    final cy = math.cos(y), sy = math.sin(y);
+    final cx = math.cos(p), sx = math.sin(p);
+
+    // R = Ry(yaw) * Rx(pitch), column-major packing
+    _bgRot = Float32List.fromList([
+      // col0
+      cy, 0.0, sy,
+      // col1
+      -sy * sx, cx, cy * sx,
+      // col2
+      -sy * cx, sx, cy * cx,
+    ]);
+  }
+
+  /// Cleans up resources.
   void dispose() {
     if (_tex != null) {
-      try { _gl.deleteTexture(_tex!); } catch (_) {}
+      try {
+        _gl.deleteTexture(_tex!);
+      } catch (_) {}
       _tex = null;
     }
     if (_prog != null) {
-      try { _gl.deleteProgram(_prog!); } catch (_) {}
+      try {
+        _gl.deleteProgram(_prog!);
+      } catch (_) {}
       _prog = null;
     }
     _uBg = _uViewport = _uFocal = _uInvViewRot = null;
@@ -86,12 +123,19 @@ class SkydomeBackground {
 
   // ---- Internals ------------------------------------------------------------
 
-  void _ensureProgram() {
+  Future<void> _ensureProgram() async {
     if (_prog != null && _gl.isProgram(_prog!) == true) return;
 
+    final vertexShaderCode = await flutter_services.rootBundle.loadString(
+      'packages/flutter_gaussian_splatter/shaders/bg_vert.glsl',
+    );
+    final fragmentShaderCode = await flutter_services.rootBundle.loadString(
+      'packages/flutter_gaussian_splatter/shaders/bg_frag.glsl',
+    );
+
     // Compile shaders
-    final vs = _compile(WebGL.VERTEX_SHADER, _bgVertSrc);
-    final fs = _compile(WebGL.FRAGMENT_SHADER, _bgFragSrc);
+    final vs = _compile(WebGL.VERTEX_SHADER, vertexShaderCode);
+    final fs = _compile(WebGL.FRAGMENT_SHADER, fragmentShaderCode);
 
     final program = _gl.createProgram();
     _gl
@@ -117,10 +161,11 @@ class SkydomeBackground {
     _prog = program;
 
     // Cache uniforms
-    _uBg        = _gl.getUniformLocation(_prog!, 'u_bg');
-    _uViewport  = _gl.getUniformLocation(_prog!, 'u_viewport');
-    _uFocal     = _gl.getUniformLocation(_prog!, 'u_focal');
-    _uInvViewRot= _gl.getUniformLocation(_prog!, 'u_invViewRot');
+    _uBg = _gl.getUniformLocation(_prog!, 'u_bg');
+    _uViewport = _gl.getUniformLocation(_prog!, 'u_viewport');
+    _uFocal = _gl.getUniformLocation(_prog!, 'u_focal');
+    _uInvViewRot = _gl.getUniformLocation(_prog!, 'u_invViewRot');
+    _uBgRot = _gl.getUniformLocation(_prog!, 'u_bgRot');
   }
 
   WebGLShader _compile(int type, String src) {
@@ -139,44 +184,3 @@ class SkydomeBackground {
     return sh;
   }
 }
-
-// ---- Embedded shader sources -------------------------------------------------
-
-const String _bgVertSrc = r'''
-#version 300 es
-void main() {
-  const vec2 verts[3] = vec2[3](
-    vec2(-1.0, -1.0),
-    vec2( 3.0, -1.0),
-    vec2(-1.0,  3.0)
-  );
-  gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);
-}
-''';
-
-const String _bgFragSrc = r'''
-#version 300 es
-precision mediump float;
-
-uniform sampler2D u_bg;
-uniform vec2      u_viewport;
-uniform vec2      u_focal;
-uniform mat3      u_invViewRot;
-
-out vec4 frag;
-
-void main() {
-  vec2 ndc = (gl_FragCoord.xy / u_viewport) * 2.0 - 1.0;
-
-  float fovX = (2.0 * u_focal.x) / u_viewport.x;
-  float fovY = (2.0 * u_focal.y) / u_viewport.y;
-
-  vec3 dir_cam = normalize(vec3(ndc.x / fovX, ndc.y / fovY, -1.0));
-  vec3 dir = normalize(u_invViewRot * dir_cam);
-
-  float u = atan(-dir.z, dir.x) / (2.0 * 3.14159265359) + 0.5;
-  float v = 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / 3.14159265359;
-
-  frag = vec4(texture(u_bg, vec2(u, v)).rgb, 1.0);
-}
-''';

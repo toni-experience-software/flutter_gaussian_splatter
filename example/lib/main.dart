@@ -35,6 +35,7 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
     return Scaffold(
       body: GaussianSplatterWidget(
         assetPath: 'assets/toycar.ply',
+        backgroundAssetPath: 'assets/sky.png',
         showStats: _showStats,
         enableProfiling: true,
       ),

@@ -25,6 +25,7 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// Set [enableProfiling] to true to enable detailed performance profiling
   const GaussianSplatterWidget({
     required this.assetPath,
+    this.backgroundAssetPath,
     super.key,
     this.showStats = false,
     this.enableProfiling = false,
@@ -40,6 +41,9 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// When false (default), uses CPU-only profiling for optimal performance.
   /// When true, enables GPU timing if supported by the platform.
   final bool enableProfiling;
+
+  /// Path to the asset containing the background image.
+  final String? backgroundAssetPath;
 
   @override
   State<GaussianSplatterWidget> createState() => _GaussianSplatterWidgetState();
@@ -130,6 +134,9 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
         fragmentShaderCode: fragmentShaderCode,
         enableProfiling: widget.enableProfiling,
       );
+      if(widget.backgroundAssetPath != null) {
+        await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
+      }
 
       texture = _renderer.targetTexture;
 

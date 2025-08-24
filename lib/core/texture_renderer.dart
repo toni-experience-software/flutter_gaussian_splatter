@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_angle/flutter_angle.dart';
+import 'package:flutter_gaussian_splatter/core/background/background_skydome.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
@@ -108,6 +109,10 @@ class TextureGaussianRenderer {
   UniformLocation? _uViewport;
   UniformLocation? _uTexture;
 
+  //Background
+  SkydomeBackground? _bg;
+  String? _bgAssetPath; // for reload after context loss
+
   // Attribute locations (cached for perf)
   int? _aPosition;
   int? _aIndex;
@@ -181,6 +186,33 @@ class TextureGaussianRenderer {
     _updateViewMatrix();
     _updateProjectionMatrix();
     _needDepthSort = true;
+  }
+
+  /// Enables the background using an asset image.
+  Future<void> enableBackgroundFromAsset(String assetPath) async {
+    _bg ??= SkydomeBackground(_gl);
+    await _bg!.setImageFromAsset(assetPath);
+    _bgAssetPath = assetPath;
+  }
+
+  /// Disables the background.
+  void disableBackground() {
+    _bg?.dispose();
+    _bg = null;
+    _bgAssetPath = null;
+  }
+
+  Float32List _invViewRot3x3() {
+    final m = _viewMatrix.storage; // column-major
+    final m00 = m[0], m01 = m[4], m02 = m[8];
+    final m10 = m[1], m11 = m[5], m12 = m[9];
+    final m20 = m[2], m21 = m[6], m22 = m[10];
+    // inv(R) = R^T; pack column-major
+    return Float32List.fromList([
+      m00, m01, m02, // col0
+      m10, m11, m12, // col1
+      m20, m21, m22, // col2
+    ]);
   }
 
   // Life‑cycle
@@ -356,7 +388,7 @@ class TextureGaussianRenderer {
         _gl = newGl;
         _targetTexture = newTexture;
 
-        // Since the RenderingContext wrapper instance changed, 
+        // Since the RenderingContext wrapper instance changed,
         // rebuild GL objects
         _disposeGlResourcesForContext(previousGl);
         await _recoverFromContextLoss();
@@ -646,9 +678,15 @@ class TextureGaussianRenderer {
     _gl
       ..bindTexture(WebGL.TEXTURE_2D, _texture)
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE,)
+        WebGL.TEXTURE_2D,
+        WebGL.TEXTURE_WRAP_S,
+        WebGL.CLAMP_TO_EDGE,
+      )
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE,)
+        WebGL.TEXTURE_2D,
+        WebGL.TEXTURE_WRAP_T,
+        WebGL.CLAMP_TO_EDGE,
+      )
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
       ..texImage2D(
@@ -691,15 +729,35 @@ class TextureGaussianRenderer {
   // Render helpers
 
   void _draw() {
-    if (camera == null || _splatBuffer == null || _splatCount <= 0) {
-      return; // Nothing to draw
-    }
+    if (camera == null) return;
 
     _gl
       ..viewport(0, 0, camera!.width, camera!.height)
       ..clearColor(0, 0, 0, 0)
       ..clear(WebGL.COLOR_BUFFER_BIT | WebGL.DEPTH_BUFFER_BIT)
       ..disable(WebGL.DEPTH_TEST)
+      ..disable(WebGL.BLEND); // no blend for skydome
+
+    // --- optional background ---
+    if (_bg?.isReady ?? false) {
+      _bg!.draw(
+        camera!.width,
+        camera!.height,
+        _camera!.fx,
+        _camera!.fy,
+        _invViewRot3x3(),
+      );
+    }
+
+    if (camera == null || _splatBuffer == null || _splatCount <= 0) {
+      return; // Nothing to draw
+    }
+
+    _gl
+      // ..viewport(0, 0, camera!.width, camera!.height)
+      // ..clearColor(0, 0, 0, 0)
+      // ..clear(WebGL.COLOR_BUFFER_BIT | WebGL.DEPTH_BUFFER_BIT)
+      // ..disable(WebGL.DEPTH_TEST)
       ..enable(WebGL.BLEND)
       ..blendFuncSeparate(
         WebGL.ONE,
@@ -708,6 +766,7 @@ class TextureGaussianRenderer {
         WebGL.ONE_MINUS_SRC_ALPHA,
       )
       ..blendEquationSeparate(WebGL.FUNC_ADD, WebGL.FUNC_ADD)
+
       ..useProgram(_program);
 
     if (_uProjection != null) {
@@ -866,6 +925,19 @@ class TextureGaussianRenderer {
     // Re-upload content if available
     if (_splatBuffer != null && _splatCount > 0) {
       _uploadSplatTexture(_splatBuffer!);
+    }
+
+    // Recreate background with new context if previously enabled
+    if (_bg != null) {
+      try {
+        _bg!.dispose();
+      } catch (_) {}
+      _bg = SkydomeBackground(_gl);
+      if (_bgAssetPath != null) {
+        try {
+          await _bg!.setImageFromAsset(_bgAssetPath!);
+        } catch (_) {}
+      }
     }
   }
 

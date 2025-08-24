@@ -10,8 +10,8 @@ uniform vec2 viewport;
 in vec2 position;       // Quad corner coordinates (-1 to 1)
 in float index;         // Gaussian splat index
 
-out vec4 vColor;
-out vec2 vPosition;     // Quad corner coordinates for fragment shader
+out mediump vec4 vColor;
+out mediump vec2 vPosition;     // Quad corner coordinates for fragment shader
 
 // ---------- helpers unchanged ----------
 float unpackHalf(uint half_val) {
@@ -147,8 +147,15 @@ vec3 evalSH_reference(in vec3 dir, in vec3 sh[15]) {
 }
 
 mat3 quatToMat3(vec4 R) {
-    float x = R.x, y = R.y, z = R.z, w = R.w;
-    return mat3(1.0f - 2.0f * (z * z + w * w), 2.0f * (y * z + x * w), 2.0f * (y * w - x * z), 2.0f * (y * z - x * w), 1.0f - 2.0f * (y * y + w * w), 2.0f * (z * w + x * y), 2.0f * (y * w + x * z), 2.0f * (z * w - y * x), 1.0f - 2.0f * (y * y + z * z));
+    // Vectorized quaternion->matrix (matches PlayCanvas)
+    vec4 R2 = R + R;
+    float X = R2.x * R.w;
+    vec4 Y = R2.y * R;
+    vec4 Z = R2.z * R;
+    float W = R2.w * R.w;
+
+    // Column-major mat3 constructor
+    return mat3(1.0f - Z.z - W, Y.z + X, Y.w - Z.x, Y.z - X, 1.0f - Y.y - W, Z.w + Y.x, Y.w + Z.x, Z.w - Y.x, 1.0f - Y.y - Z.z);
 }
 
 void main() {
@@ -169,9 +176,6 @@ void main() {
     vec3 scale = p1_data.xyz;
 
     // SH
-    vec3 sh[15];
-    float shScale;
-    readSHData_reference(idx, sh, shScale);
 
     // Camera transform
     vec4 cam_view_space = view * vec4(worldPos, 1.0f);
@@ -229,6 +233,7 @@ void main() {
 
     float mid = 0.5f * (d1 + d2);
     float rad = length(vec2((d1 - d2) * 0.5f, od));
+
     float l1 = mid + rad;
     float l2 = max(mid - rad, 0.1f);
 
@@ -255,28 +260,30 @@ void main() {
         return;
     }
 
-    // Color
+    // ---------- Color + SH (lazy: only after we pass all early-outs) ----------
     uint packedColorBits = floatBitsToUint(p1_data.w);
     vec4 base_color_srgb = vec4(float(packedColorBits & 0xffu), float((packedColorBits >> 8u) & 0xffu), float((packedColorBits >> 16u) & 0xffu), float((packedColorBits >> 24u) & 0xffu)) / 255.0f;
 
     vec3 base_color_linear = base_color_srgb.rgb;
 
-    // SH direction (unchanged)
-    vec4 centerView = view * vec4(worldPos, 1.0f);
-    vec3 center_view = centerView.xyz / centerView.w;
-    mat4 center_modelView = view;
-    vec3 dir_sh = normalize(center_view * mat3(center_modelView));
+// Read SH now (after culling), not earlier
+    vec3 sh[15];
+    float shScale;
+    readSHData_reference(idx, sh, shScale);
 
-    // SH eval + combine (DC term is in base color)
+// Use existing cam_view_space to build SH view direction
+    vec3 dir_sh = normalize((cam_view_space.xyz / cam_view_space.w) * mat3(view));
+
+// SH eval + combine (DC term is in base color)
     vec3 sh_lighting = evalSH_reference(dir_sh, sh);
     vec3 sum_linear = base_color_linear + sh_lighting;
     vec3 final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0f)));
 
-    // Corner clipping & final position
+// Corner clipping & final position
     vec2 corner_uv = position;
     clipCorner(majorAxis, minorAxis, corner_uv, base_color_srgb.a);
 
-    vec2 offsetClip = (corner_uv.x * majorAxis + corner_uv.y * minorAxis) * c;
+    vec2 offsetClip = (corner_uv.x * majorAxis + corner_uv.y * minorAxis) * c; // 'c' already computed above
     gl_Position = vec4(pos2d.xy + offsetClip, pos2d.z, pos2d.w);
 
     vColor = vec4(final_srgb_rgb, base_color_srgb.a);

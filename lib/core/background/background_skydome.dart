@@ -85,21 +85,21 @@ class SkydomeBackground {
       ..drawArrays(WebGL.TRIANGLES, 0, 3);
   }
 
-  /// Set yaw pitch
+  /// Set yaw pitch for simple sphere rotation
   void setYawPitchDegrees(double yawDeg, double pitchDeg) {
     final y = yawDeg * math.pi / 180.0; // yaw around +Y (left/right)
     final p = pitchDeg * math.pi / 180.0; // pitch around +X (up/down)
     final cy = math.cos(y), sy = math.sin(y);
-    final cx = math.cos(p), sx = math.sin(p);
+    final cp = math.cos(p), sp = math.sin(p);
 
-    // R = Ry(yaw) * Rx(pitch), column-major packing
+    // Simple rotation matrix: Ry(yaw) * Rx(pitch) in column-major order
     _bgRot = Float32List.fromList([
-      // col0
-      cy, 0.0, sy,
-      // col1
-      -sy * sx, cx, cy * sx,
-      // col2
-      -sy * cx, sx, cy * cx,
+      // col0: X basis
+      cy, sy * sp, sy * cp,
+      // col1: Y basis  
+      0.0, cp, -sp,
+      // col2: Z basis
+      -sy, cy * sp, cy * cp,
     ]);
   }
 

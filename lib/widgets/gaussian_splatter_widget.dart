@@ -46,10 +46,10 @@ class GaussianSplatterWidget extends StatefulWidget {
   final String? backgroundAssetPath;
 
   @override
-  State<GaussianSplatterWidget> createState() => _GaussianSplatterWidgetState();
+  State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
 }
 
-class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
+class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     with SingleTickerProviderStateMixin {
   // Constants
   static const double _kZoomSensitivity = 0.1;
@@ -332,6 +332,11 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     } catch (e) {
       log('Resize failed: $e');
     }
+  }
+
+  /// Sets the background rotation for real-time testing
+  void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
+    _renderer.setBackgroundRotation(yawDegrees, pitchDegrees);
   }
 
   Widget _buildStatsOverlay() {

@@ -203,6 +203,11 @@ class TextureGaussianRenderer {
     _bgAssetPath = null;
   }
 
+  /// Sets the background rotation in degrees.
+  void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
+    _bg?.setYawPitchDegrees(yawDegrees, pitchDegrees);
+  }
+
 Float32List _invViewRot3x3() {
   final R = _camera!.rotation; // camera->world
   return Float32List.fromList([

@@ -6,6 +6,7 @@ in mediump vec4 vColor;
 in mediump vec2 vPosition;
 out vec4 fragColor;
 
+
 // Schraudolph fast exp (bitcast)
 const float EXP_A = 12102203.0f;     // ≈ 2^23 / ln(2)
 const int EXP_B = 1064866808;     // (127 << 23) - 60801 * 8
@@ -18,17 +19,22 @@ float fastExp(float x) {
 float fastExp(float x) { return exp2(x * 1.4426950408889634); } */
 
 void main() {
-    float r2 = dot(vPosition, vPosition);
-    if(r2 > 4.0f) {
-        discard; // outside r=2 circle
+    //coordinate system: [-1,1] range, unit circle
+    mediump float A = dot(vPosition, vPosition);
+    
+    // discard outside unit circle
+    if(A > 1.0f) {
+        discard; // outside unit circle
     }
 
-    float finalAlpha = vColor.a * fastExp(-r2);
+    // alpha calculation with 4.0 factor
+    mediump float alpha = fastExp(-A * 4.0f) * vColor.a;
 
-    if(finalAlpha < 1.0f / 255.0f) {
-        discard; // negligible blend
+    // alpha threshold
+    if(alpha < 1.0f / 255.0f) {
+        discard; // negligible blend contribution
     }
 
-    // premultiplied output
-    fragColor = vec4(vColor.rgb * finalAlpha, finalAlpha);
+    // premultiplied alpha output
+    fragColor = vec4(vColor.rgb * alpha, alpha);
 }

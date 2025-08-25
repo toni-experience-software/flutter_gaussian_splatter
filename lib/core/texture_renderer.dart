@@ -119,7 +119,7 @@ class TextureGaussianRenderer {
 
   // Buffers & textures
   Buffer? _vertexBuffer;
-  Buffer? _indexBuffer;
+  Buffer? _instanceIndexBuffer; // Per-instance attribute buffer (not an element array)
   WebGLTexture? _texture; // Splat data texture
 
   // Core helpers
@@ -130,6 +130,8 @@ class TextureGaussianRenderer {
   var _viewMatrix = Matrix4.identity();
   var _projectionMatrix = Matrix4.identity();
   GaussianCamera? _camera;
+
+
 
   // Splat data & vertices
   int _vertexCount = 0;
@@ -154,6 +156,7 @@ class TextureGaussianRenderer {
   // Scratch arrays (re‑used to avoid per‑frame allocs)
   Float32Array? _scratchDepthArray;
   Float32Array? _persistentIndexArray;
+  Float32Array? _splatTexScratch; // Reused for texture uploads
 
   // Public API
 
@@ -207,6 +210,8 @@ class TextureGaussianRenderer {
   void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
     _bg?.setYawPitchDegrees(yawDegrees, pitchDegrees);
   }
+
+
 
 Float32List _invViewRot3x3() {
   final R = _camera!.rotation; // camera->world
@@ -440,6 +445,7 @@ Float32List _invViewRot3x3() {
 
     _scratchDepthArray = null;
     _persistentIndexArray = null;
+    _splatTexScratch = null;
 
     _disposeGlResourcesForContext(_gl);
 
@@ -519,7 +525,8 @@ Float32List _invViewRot3x3() {
   Future<void> _createBuffers() async {
     _disposeBuffers();
 
-    const quadVertices = <double>[-2, -2, 2, -2, 2, 2, -2, 2];
+    // [-1,1] quad (unit coordinates)
+    const quadVertices = <double>[-1, -1, 1, -1, 1, 1, -1, 1];
 
     _vertexBuffer = _gl.createBuffer();
     _gl
@@ -530,7 +537,7 @@ Float32List _invViewRot3x3() {
         WebGL.STATIC_DRAW,
       );
 
-    _indexBuffer = _gl.createBuffer();
+    _instanceIndexBuffer = _gl.createBuffer();
   }
 
   void _disposeProgram() {
@@ -546,9 +553,9 @@ Float32List _invViewRot3x3() {
       _gl.deleteBuffer(_vertexBuffer!);
       _vertexBuffer = null;
     }
-    if (_indexBuffer != null) {
-      _gl.deleteBuffer(_indexBuffer!);
-      _indexBuffer = null;
+    if (_instanceIndexBuffer != null) {
+      _gl.deleteBuffer(_instanceIndexBuffer!);
+      _instanceIndexBuffer = null;
     }
   }
 
@@ -565,8 +572,12 @@ Float32List _invViewRot3x3() {
   }
 
   void _cacheAttributeLocations() {
-    _aPosition = _gl.getAttribLocation(_program!, 'position').id as int?;
-    _aIndex = _gl.getAttribLocation(_program!, 'index').id as int?;
+    final positionLoc = _gl.getAttribLocation(_program!, 'position').id as int?;
+    final indexLoc = _gl.getAttribLocation(_program!, 'index').id as int?;
+    
+    // Guard against -1 (not found) or null
+    _aPosition = (positionLoc != null && positionLoc >= 0) ? positionLoc : null;
+    _aIndex = (indexLoc != null && indexLoc >= 0) ? indexLoc : null;
   }
 
   UniformLocation? _uniform(String name) => _uniformLocationCache.putIfAbsent(
@@ -577,7 +588,7 @@ Float32List _invViewRot3x3() {
   // Depth‑sorting callback
 
   void _onDepthSortComplete(depth.SortResult result) {
-    _gl.bindBuffer(WebGL.ARRAY_BUFFER, _indexBuffer);
+    _gl.bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer);
 
     _scratchDepthArray ??= Float32Array(result.vertexCount);
     if (_scratchDepthArray!.length < result.vertexCount) {
@@ -617,7 +628,13 @@ Float32List _invViewRot3x3() {
       _depthSorter.runSort(vp, buffer, splatCount);
     }
 
-    final texData = Float32Array(GsConst.texWidth * texHeight * 4);
+    // Preallocate and reuse texture array to avoid allocation churn
+    final needed = GsConst.texWidth * texHeight * 4;
+    _splatTexScratch ??= Float32Array(needed);
+    if (_splatTexScratch!.length < needed) {
+      _splatTexScratch = Float32Array(needed);
+    }
+    final texData = _splatTexScratch!;
 
     for (var idx = 0; idx < splatCount; idx++) {
       // MUST match vertex.glsl base_uv logic: (idx & 0x1ff) * 5 , idx >> 9
@@ -722,7 +739,7 @@ Float32List _invViewRot3x3() {
     }
 
     _gl
-      ..bindBuffer(WebGL.ARRAY_BUFFER, _indexBuffer)
+      ..bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer)
       ..bufferData(
         WebGL.ARRAY_BUFFER,
         _persistentIndexArray,
@@ -760,10 +777,6 @@ Float32List _invViewRot3x3() {
     }
 
     _gl
-      // ..viewport(0, 0, camera!.width, camera!.height)
-      // ..clearColor(0, 0, 0, 0)
-      // ..clear(WebGL.COLOR_BUFFER_BIT | WebGL.DEPTH_BUFFER_BIT)
-      // ..disable(WebGL.DEPTH_TEST)
       ..enable(WebGL.BLEND)
       ..blendFuncSeparate(
         WebGL.ONE,
@@ -808,16 +821,21 @@ Float32List _invViewRot3x3() {
     if (_aIndex != null) {
       _gl
         ..enableVertexAttribArray(_aIndex!)
-        ..bindBuffer(WebGL.ARRAY_BUFFER, _indexBuffer)
+      ..bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer)
         ..vertexAttribPointer(_aIndex!, 1, WebGL.FLOAT, false, 0, 0)
         ..vertexAttribDivisor(_aIndex!, 1);
     }
 
     _gl.drawArraysInstanced(WebGL.TRIANGLE_FAN, 0, 4, _vertexCount);
-    _gl.gl.glFlush();
-
     // Unbind resources after drawing to prevent disposal issues
-    _gl.bindTexture(WebGL.TEXTURE_2D, null);
+    if (_aPosition != null) {
+      _gl.disableVertexAttribArray(_aPosition!);
+    }
+    if (_aIndex != null) {
+      _gl.disableVertexAttribArray(_aIndex!);
+    }
+    _gl..bindTexture(WebGL.TEXTURE_2D, null)
+    ..bindBuffer(WebGL.ARRAY_BUFFER, null);
   }
 
   // Matrix helpers
@@ -888,6 +906,7 @@ Float32List _invViewRot3x3() {
     // Drop stale CPU-side caches
     _scratchDepthArray = null;
     _persistentIndexArray = null;
+    _splatTexScratch = null;
 
     // Ensure any leftover GL objects (if any) are gone on the *current* context.
     // Safe no-op when nothing exists.
@@ -977,11 +996,11 @@ Float32List _invViewRot3x3() {
       _vertexBuffer = null;
     }
 
-    if (_indexBuffer != null) {
+    if (_instanceIndexBuffer != null) {
       try {
-        gl.deleteBuffer(_indexBuffer!);
+        gl.deleteBuffer(_instanceIndexBuffer!);
       } catch (_) {}
-      _indexBuffer = null;
+      _instanceIndexBuffer = null;
     }
 
     if (_texture != null) {

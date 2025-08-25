@@ -41,7 +41,7 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
           GaussianSplatterWidget(
             key: _splatterKey,
             assetPath: 'assets/toycar.ply',
-            backgroundAssetPath: 'assets/sky.png',
+            backgroundAssetPath: 'assets/sky.jpg',
             showStats: _showStats,
             enableProfiling: true,
           ),
@@ -98,18 +98,18 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
                       });
                       _splatterKey.currentState?.setBackgroundRotation(_yaw, _pitch);
                     },
-                  ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: () {
-                      setState(() {
-                        _yaw = 0.0;
-                        _pitch = 0.0;
-                      });
-                      _splatterKey.currentState?.setBackgroundRotation(_yaw, _pitch);
-                    },
-                    child: const Text('Reset'),
-                  ),
+                   ),
+                   const SizedBox(height: 8),
+                   ElevatedButton(
+                     onPressed: () {
+                       setState(() {
+                         _yaw = 0.0;
+                         _pitch = 0.0;
+                       });
+                       _splatterKey.currentState?.setBackgroundRotation(_yaw, _pitch);
+                     },
+                     child: const Text('Reset'),
+                   ),
                 ],
               ),
             ),

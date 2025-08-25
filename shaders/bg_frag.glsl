@@ -15,7 +15,14 @@ out vec4 frag;
 #define SKY_FLIP_U       0   // <<< THIS IS THE FIX. Set it to 0.
 #define SKY_FLIP_V       0   // 1: mirror vertically
 #define SKY_DEBUG_MODE   0   // 0=texture, 1=dir-color, 2=UV-checker
-// ============================
+
+// Enable the "move origin" illusion (off-center inside a finite sphere)
+#define SKY_MOVE_ORIGIN      1
+
+// ---- Tweak these two for testing (no uniforms needed) ----
+#define SPHERE_RADIUS        1.0    // arbitrary units; just keep it > 0
+#define ORIGIN_Y_OFFSET      0.2   // +Y raises the eye: ~20% of radius feels subtle
+// ----------------------------------------------------------
 
 const float PI         = 3.14159265359;
 const float INV_PI     = 0.3183098861837907;
@@ -25,13 +32,18 @@ void main() {
   // Pixel -> NDC
   vec2 ndc = (gl_FragCoord.xy / u_viewport) * 2.0 - 1.0;
 
-  // Intrinsics -> normalized slopes (matches your projection build)
+  // Intrinsics -> normalized slopes (wider FOV for distant sky feel)
   float fovX = (2.0 * u_focal.x) / u_viewport.x;
   float fovY = (2.0 * u_focal.y) / u_viewport.y;
 
+  // Scale down the FOV factors to show more of the sky (infinite distance effect)
+  float skyZoomFactor = 0.5; // Lower values = more sky visible, more distant feeling
+  fovX *= skyZoomFactor;
+  fovY *= skyZoomFactor;
+
   // Camera ray (GL convention: forward = -Z)
-//  vec3 dir_cam = normalize(vec3(ndc.x / fovX, ndc.y / fovY, -1.0));
-vec3 dir_cam = normalize(vec3(-ndc.x / fovX, -ndc.y / fovY, -1.0f));
+  // vec3 dir_cam = normalize(vec3(ndc.x / fovX, ndc.y / fovY, -1.0));
+  vec3 dir_cam = normalize(vec3(-ndc.x / fovX, -ndc.y / fovY, -1.0f));
 
   // Rotate into desired frame
   vec3 d;
@@ -47,9 +59,33 @@ vec3 dir_cam = normalize(vec3(-ndc.x / fovX, -ndc.y / fovY, -1.0f));
   d = vec3(d.x, d.z, -d.y);
 #endif
 
+  // ===== Off-center sampling inside a finite sphere (no uniforms) =====
+#if SKY_MOVE_ORIGIN
+  // Only do work if there's a non-zero offset
+  if (ORIGIN_Y_OFFSET != 0.0) {
+    // Mapping frame: camera at origin O=0, view dir d (|d|=1)
+    vec3 C = vec3(0.0, -ORIGIN_Y_OFFSET, 0.0); // sphere center below the eye
+    float R = max(float(SPHERE_RADIUS), 1e-3);
+
+    // Ray-sphere intersection: |t*d - C|^2 = R^2
+    vec3 oc = -C;                         // O - C
+    float b = dot(oc, d);                 // half of the usual 'B'
+    float c = dot(oc, oc) - R*R;
+    float disc = b*b - c;                 // since a=1 and we folded the 2
+
+    if (disc > 0.0) {
+      // We're inside; take the far exit point
+      float t = -b + sqrt(disc);
+      vec3 P = d * t;
+      vec3 n = normalize(P - C);          // normal at hit point
+      d = n;                              // use normal for spherical mapping
+    }
+    // else: degenerate, keep original 'd'
+  }
+#endif
+  // ====================================================================
+
   // --- Correct Spherical Mapping ---
-  // Calculates spherical angles with a consistent right-handed coordinate system.
-  // This ensures yaw (top/bottom view) and roll (side view) behave correctly.
   float yaw   = -atan(d.x, d.z);                // +yaw = clockwise (top view)
   float pitch = atan(d.y, length(d.xz));        // [-pi/2 .. +pi/2]
 

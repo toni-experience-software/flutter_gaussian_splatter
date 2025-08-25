@@ -147,7 +147,7 @@ vec3 evalSH_reference(in vec3 dir, in vec3 sh[15]) {
 }
 
 mat3 quatToMat3(vec4 R) {
-    // Vectorized quaternion->matrix (matches PlayCanvas)
+    // Vectorized quaternion->matrix
     vec4 R2 = R + R;
     float X = R2.x * R.w;
     vec4 Y = R2.y * R;
@@ -248,8 +248,9 @@ void main() {
     }
 
     vec2 diagVec = normalize(vec2(od, l1 - d1));
-    vec2 majorAxis = min(s1, 1024.0f) * diagVec;
-    vec2 minorAxis = min(s2, 1024.0f) * vec2(diagVec.y, -diagVec.x);
+    // Compensate for coordinate system change: [-2,2] → [-1,1] requires 2x scale
+    vec2 majorAxis = min(s1, 1024.0f) * 2.0f * diagVec;
+    vec2 minorAxis = min(s2, 1024.0f) * 2.0f * vec2(diagVec.y, -diagVec.x);
 
     // same frustum guard as your version
     vec2 c = pos2d.ww / viewport;

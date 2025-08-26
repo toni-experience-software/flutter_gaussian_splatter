@@ -21,7 +21,7 @@ out vec4 frag;
 
 // ---- Tweak these two for testing (no uniforms needed) ----
 #define SPHERE_RADIUS        1.0    // arbitrary units; just keep it > 0
-#define ORIGIN_Y_OFFSET      0.2   // +Y raises the eye: ~20% of radius feels subtle
+#define ORIGIN_Y_OFFSET      0.0   // +Y raises the eye: ~0% of radius feels subtle
 // ----------------------------------------------------------
 
 const float PI         = 3.14159265359;

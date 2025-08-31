@@ -1,3 +1,8 @@
+## 0.2.2 - 2025-08-31
+
+* fix: code cleanup and optimization for better maintainability
+* feat: Add backgrounds to 3D viewer
+
 ## 0.2.1 - 2025-08-22
 
 * feat: make profiling optional for optimal performance (defaults to disabled)

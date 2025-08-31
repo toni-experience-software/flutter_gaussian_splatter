@@ -25,6 +25,7 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// Set [enableProfiling] to true to enable detailed performance profiling
   const GaussianSplatterWidget({
     required this.assetPath,
+    this.backgroundAssetPath,
     super.key,
     this.showStats = false,
     this.enableProfiling = false,
@@ -41,11 +42,14 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// When true, enables GPU timing if supported by the platform.
   final bool enableProfiling;
 
+  /// Path to the asset containing the background image.
+  final String? backgroundAssetPath;
+
   @override
-  State<GaussianSplatterWidget> createState() => _GaussianSplatterWidgetState();
+  State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
 }
 
-class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
+class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
     with SingleTickerProviderStateMixin {
   // Constants
   static const double _kZoomSensitivity = 0.1;
@@ -69,6 +73,7 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   double _orbitDistance = 1;
   double _theta = 0;
   double _phi = math.pi / 2;
+  final vm.Vector3 _orbitOrigin = vm.Vector3(0,-0.1,0); // center of the orbit
 
   // Stats
   String _statsText = '';
@@ -130,6 +135,9 @@ class _GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
         fragmentShaderCode: fragmentShaderCode,
         enableProfiling: widget.enableProfiling,
       );
+      if(widget.backgroundAssetPath != null) {
+        await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
+      }
 
       texture = _renderer.targetTexture;
 
@@ -260,51 +268,45 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     _isInteracting = false;
   }
 
-  void _orbitCamera(double deltaX, double deltaY) {
-    _theta -= deltaX;
-    _phi = (_phi - deltaY).clamp(0.01, math.pi - 0.01);
+  void _applyCameraFromSpherical() {
+  final r = _orbitDistance;
 
-    final r = _orbitDistance;
-    final newX = r * math.sin(_phi) * math.sin(_theta);
-    final newY = r * math.cos(_phi);
-    final newZ = r * math.sin(_phi) * math.cos(_theta);
-    final newPosition = vm.Vector3(newX, newY, newZ);
+  final rel = vm.Vector3(
+    r * math.sin(_phi) * math.sin(_theta),
+    r * math.cos(_phi),
+    r * math.sin(_phi) * math.cos(_theta),
+  );
 
-    final forward = (-newPosition).normalized();
-    final up = vm.Vector3(0, -1, 0); // Flip Y-axis to match coordinate system
-    final right = up.cross(forward).normalized();
-    final trueUp = forward.cross(right).normalized();
-    final newRotation = vm.Matrix3.columns(right, trueUp, forward);
+  // Position is orbit-origin + relative spherical offset
+  final pos = _orbitOrigin + rel;
 
-    final camera = _renderer.camera?.withUpdatedPosAndRot(
-      position: newPosition,
-      rotation: newRotation,
-    );
-    _renderer.camera = camera;
-  }
+  // Look at the orbit origin
+  final forward = (_orbitOrigin - pos).normalized();
+  final up = vm.Vector3(0, -1, 0); // your coordinate system
+  final right = up.cross(forward).normalized();
+  final trueUp = forward.cross(right).normalized();
+  final rot = vm.Matrix3.columns(right, trueUp, forward);
 
-  void _zoomCamera(double delta) {
-    _orbitDistance =
-        (_orbitDistance + delta).clamp(_kMinOrbitDistance, _kMaxOrbitDistance);
+  _renderer.camera = _renderer.camera?.withUpdatedPosAndRot(
+    position: pos,
+    rotation: rot,
+  );
+}
 
-    final r = _orbitDistance;
-    final newX = r * math.sin(_phi) * math.sin(_theta);
-    final newY = r * math.cos(_phi);
-    final newZ = r * math.sin(_phi) * math.cos(_theta);
-    final newPosition = vm.Vector3(newX, newY, newZ);
 
-    final forward = (-newPosition).normalized();
-    final up = vm.Vector3(0, -1, 0); // Flip Y-axis to match coordinate system
-    final right = up.cross(forward).normalized();
-    final trueUp = forward.cross(right).normalized();
-    final newRotation = vm.Matrix3.columns(right, trueUp, forward);
+void _orbitCamera(double deltaX, double deltaY) {
+  _theta -= deltaX;
+  _phi = (_phi - deltaY).clamp(0.01, math.pi - 0.01);
+  _applyCameraFromSpherical();
+}
 
-    final camera = _renderer.camera?.withUpdatedPosAndRot(
-      position: newPosition,
-      rotation: newRotation,
-    );
-    _renderer.camera = camera;
-  }
+void _zoomCamera(double delta) {
+  _orbitDistance =
+      (_orbitDistance + delta).clamp(_kMinOrbitDistance, _kMaxOrbitDistance);
+  _applyCameraFromSpherical();
+}
+
+
 
   Future<void> _handleResize(Size newSize) async {
     try {
@@ -326,6 +328,13 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
       log('Resize failed: $e');
     }
   }
+
+  /// Sets the background rotation for real-time testing
+  void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
+    _renderer.setBackgroundRotation(yawDegrees, pitchDegrees);
+  }
+
+
 
   Widget _buildStatsOverlay() {
     return Positioned(

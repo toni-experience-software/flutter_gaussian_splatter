@@ -15,8 +15,8 @@ uniform highp usampler2D u_orderTexture;
 in vec3 position;       // Quad corner coordinates (-1 to 1) with local offset in .z
 // Base index computed from gl_InstanceID - no attribute needed
 
-out mediump vec4 vColor;
-out mediump vec2 vPosition;     // Quad corner coordinates for fragment shader
+out highp vec4 vColor;
+out highp vec2 vPosition;     // Quad corner coordinates for fragment shader
 
 uniform int splatCount;
 

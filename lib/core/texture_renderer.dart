@@ -161,6 +161,9 @@ class TextureGaussianRenderer {
   String? _profilerType;
   bool _isResizing = false;
 
+  // Optimization settings
+  bool _disableAlphaWrite = true;
+
   // Shader sources (kept for context‑loss recovery)
   late final String _vertexShaderSource;
   late final String _fragmentShaderSource;
@@ -219,6 +222,12 @@ class TextureGaussianRenderer {
   /// Sets the background rotation in degrees.
   void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
     _bg?.setYawPitchDegrees(yawDegrees, pitchDegrees);
+  }
+
+  /// Enables/disables alpha channel writes for bandwidth optimization.
+  /// Only disable if nothing downstream samples the framebuffer's alpha channel.
+  void setDisableAlphaWrite({required bool disable}) {
+    _disableAlphaWrite = disable;
   }
 
   Float32List _invViewRot3x3() {
@@ -871,7 +880,12 @@ void _uploadIndexBuffer(int splatCount) {
       return; // Nothing to draw
     }
 
+    // Re-enable depth testing for splats to cull fragments behind opaque geometry
+    // Keep depth writes off to maintain proper order-independent transparency
     _gl
+      ..enable(WebGL.DEPTH_TEST)
+      ..depthMask(false)  // don't write depth; just test against opaque depth
+      ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
       ..blendFuncSeparate(
         WebGL.ONE,
@@ -879,8 +893,14 @@ void _uploadIndexBuffer(int splatCount) {
         WebGL.ONE,
         WebGL.ONE_MINUS_SRC_ALPHA,
       )
-      ..blendEquationSeparate(WebGL.FUNC_ADD, WebGL.FUNC_ADD)
-      ..useProgram(_program);
+      ..blendEquationSeparate(WebGL.FUNC_ADD, WebGL.FUNC_ADD);
+
+    // Optional bandwidth optimization: disable alpha channel writes if not needed
+    if (_disableAlphaWrite) {
+      _gl.colorMask(true, true, true, false);
+    }
+
+    _gl.useProgram(_program);
 
     if (_uProjection != null) {
       _gl.uniformMatrix4fv(_uProjection!, false, _projectionMatrix.storage);
@@ -950,6 +970,12 @@ void _uploadIndexBuffer(int splatCount) {
     if (_aPosition != null) {
       _gl.disableVertexAttribArray(_aPosition!);
     }
+
+    // Restore color mask if it was modified
+    if (_disableAlphaWrite) {
+      _gl.colorMask(true, true, true, true);
+    }
+
     _gl
       ..bindTexture(WebGL.TEXTURE_2D, null)
       ..bindBuffer(WebGL.ARRAY_BUFFER, null);

@@ -108,6 +108,8 @@ class TextureGaussianRenderer {
   UniformLocation? _uFocal;
   UniformLocation? _uViewport;
   UniformLocation? _uTexture;
+  UniformLocation? _uSplatCount;
+  UniformLocation? _uOrderTexture;
 
   //Background
   SkydomeBackground? _bg;
@@ -119,8 +121,14 @@ class TextureGaussianRenderer {
 
   // Buffers & textures
   Buffer? _vertexBuffer;
-  Buffer? _instanceIndexBuffer; // Per-instance attribute buffer (not an element array)
+  Buffer?
+      _instanceIndexBuffer; // Per-instance attribute buffer (not an element array)
+
+  // Buffer storing index data for triangles.  Batched quads are drawn as
+  // independent triangles rather than a strip to avoid winding‑order issues.
+  Buffer? _elementBuffer; // Index buffer for batched quads
   WebGLTexture? _texture; // Splat data texture
+  WebGLTexture? _orderTexture; // Texture storing sorted indices
 
   // Core helpers
   late final depth.DepthSorterImpl _depthSorter;
@@ -131,12 +139,13 @@ class TextureGaussianRenderer {
   var _projectionMatrix = Matrix4.identity();
   GaussianCamera? _camera;
 
-
-
   // Splat data & vertices
   int _vertexCount = 0;
   Uint8List? _splatBuffer;
   int _splatCount = 0;
+
+  // Number of indices in a single batched group (6 per quad).
+  int get _indicesPerBatch => GsConst.splatsPerInstance * 6;
 
   // Timing & FPS
   bool _isRendering = false;
@@ -211,20 +220,17 @@ class TextureGaussianRenderer {
     _bg?.setYawPitchDegrees(yawDegrees, pitchDegrees);
   }
 
-
-
-Float32List _invViewRot3x3() {
-  final R = _camera!.rotation; // camera->world
-  return Float32List.fromList([
-    // col0
-    R.row0.x, R.row1.x, R.row2.x,
-    // col1
-    R.row0.y, R.row1.y, R.row2.y,
-    // col2
-    R.row0.z, R.row1.z, R.row2.z,
-  ]);
-}
-
+  Float32List _invViewRot3x3() {
+    final R = _camera!.rotation; // camera->world
+    return Float32List.fromList([
+      // col0
+      R.row0.x, R.row1.x, R.row2.x,
+      // col1
+      R.row0.y, R.row1.y, R.row2.y,
+      // col2
+      R.row0.z, R.row1.z, R.row2.z,
+    ]);
+  }
 
   // Life‑cycle
 
@@ -525,18 +531,54 @@ Float32List _invViewRot3x3() {
   Future<void> _createBuffers() async {
     _disposeBuffers();
 
-    // [-1,1] quad (unit coordinates)
-    const quadVertices = <double>[-1, -1, 1, -1, 1, 1, -1, 1];
+    // Build batched vertex buffer.  Each batch contains [GsConst.splatsPerInstance]
+    // quads, each requiring 4 vertices.  We store position.xy for the quad corners
+    // and position.z as the local offset within the batch (0, 1, 2, ...).
+    final vertices = <double>[];
+    for (var quadIdx = 0; quadIdx < GsConst.splatsPerInstance; quadIdx++) {
+      const corners = [
+        [-1.0, -1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0]
+      ];
+      for (final corner in corners) {
+        vertices.addAll([corner[0], corner[1], quadIdx.toDouble()]);
+      }
+    }
 
     _vertexBuffer = _gl.createBuffer();
     _gl
       ..bindBuffer(WebGL.ARRAY_BUFFER, _vertexBuffer)
       ..bufferData(
         WebGL.ARRAY_BUFFER,
-        Float32Array.fromList(quadVertices),
+        Float32Array.fromList(vertices),
         WebGL.STATIC_DRAW,
       );
 
+    // Build index buffer for triangles using 16-bit indices for better bandwidth.
+    // Each batch has GsConst.splatsPerInstance (128) splats * 4 vertices = 512 vertices,
+    // which fits comfortably in 16-bit range (65535).
+    // Each quad needs 6 indices.
+    final indicesList = <int>[];
+    for (var quadIdx = 0; quadIdx < GsConst.splatsPerInstance; quadIdx++) {
+      final baseVertex = quadIdx * 4;
+      // First triangle: [0, 1, 2]
+      indicesList.addAll([baseVertex + 0, baseVertex + 1, baseVertex + 2]);
+      // Second triangle: [0, 2, 3]
+      indicesList.addAll([baseVertex + 0, baseVertex + 2, baseVertex + 3]);
+    }
+
+    _elementBuffer = _gl.createBuffer();
+    _gl
+      ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _elementBuffer)
+      ..bufferData(
+        WebGL.ELEMENT_ARRAY_BUFFER,
+        Uint16Array.fromList(indicesList),
+        WebGL.STATIC_DRAW,
+      );
+
+    // Instance index buffer will hold one float per instanced batch.
     _instanceIndexBuffer = _gl.createBuffer();
   }
 
@@ -557,6 +599,15 @@ Float32List _invViewRot3x3() {
       _gl.deleteBuffer(_instanceIndexBuffer!);
       _instanceIndexBuffer = null;
     }
+    if (_elementBuffer != null) {
+      _gl.deleteBuffer(_elementBuffer!);
+      _elementBuffer = null;
+    }
+    // Delete order texture
+    if (_orderTexture != null) {
+      _gl.deleteTexture(_orderTexture!);
+      _orderTexture = null;
+    }
   }
 
   // Uniform / attribute cache helpers
@@ -569,12 +620,14 @@ Float32List _invViewRot3x3() {
     _uFocal = _uniform('focal'); // might be null if not in shader.
     _uViewport = _uniform('viewport');
     _uTexture = _uniform('u_texture');
+    _uSplatCount = _uniform('splatCount');
+    _uOrderTexture = _uniform('u_orderTexture');
   }
 
   void _cacheAttributeLocations() {
     final positionLoc = _gl.getAttribLocation(_program!, 'position').id as int?;
     final indexLoc = _gl.getAttribLocation(_program!, 'index').id as int?;
-    
+
     // Guard against -1 (not found) or null
     _aPosition = (positionLoc != null && positionLoc >= 0) ? positionLoc : null;
     _aIndex = (indexLoc != null && indexLoc >= 0) ? indexLoc : null;
@@ -588,19 +641,36 @@ Float32List _invViewRot3x3() {
   // Depth‑sorting callback
 
   void _onDepthSortComplete(depth.SortResult result) {
+    // When depth sorting completes we receive the full sorted index list in
+    // result.depthIndex.  Update the order texture with this list so that
+    // the vertex shader can map from batch offset to actual splat index.
+    _uploadOrderTexture(result.depthIndex);
+
+    // Compute the number of instanced batches needed to cover all sorted
+    // indices.  Each batch contains [GsConst.splatsPerInstance] entries in
+    // the order texture.  The instance index buffer stores the starting
+    // index into the order texture for each batch (0, batchSize, 2*batchSize,…).
+    final batchSize = GsConst.splatsPerInstance;
+    final groups = (result.vertexCount + batchSize - 1) ~/ batchSize;
+
     _gl.bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer);
 
-    _scratchDepthArray ??= Float32Array(result.vertexCount);
-    if (_scratchDepthArray!.length < result.vertexCount) {
-      _scratchDepthArray = Float32Array(result.vertexCount);
+    // Ensure scratch array is large enough for the number of groups.
+    _scratchDepthArray ??= Float32Array(groups);
+    if (_scratchDepthArray!.length < groups) {
+      _scratchDepthArray = Float32Array(groups);
     }
 
-    for (var i = 0; i < result.vertexCount; i++) {
-      _scratchDepthArray![i] = result.depthIndex[i].toDouble();
+    for (var i = 0; i < groups; i++) {
+      // Base index points into the order texture rather than directly
+      // referencing the sorted depth array.  The vertex shader will add
+      // the per‑vertex offset to this base and then sample u_orderTexture
+      // to obtain the actual splat index.
+      _scratchDepthArray![i] = (i * batchSize).toDouble();
     }
 
     _gl.bufferData(WebGL.ARRAY_BUFFER, _scratchDepthArray, WebGL.DYNAMIC_DRAW);
-    _vertexCount = result.vertexCount;
+    _vertexCount = groups;
     _needDepthSort = false;
   }
 
@@ -725,29 +795,87 @@ Float32List _invViewRot3x3() {
       );
 
     _uploadIndexBuffer(splatCount);
+
+    // Build initial order texture (unsorted) using sequential indices
+    _uploadOrderTexture(List<int>.generate(splatCount, (i) => i));
   }
 
-  void _uploadIndexBuffer(int splatCount) {
-    // Lazily create / resize persistent index array.
-    _persistentIndexArray ??= Float32Array(splatCount);
-    if (_persistentIndexArray!.length < splatCount) {
-      _persistentIndexArray = Float32Array(splatCount);
+  /// Uploads sorted indices to the order texture.  Each index is stored as
+  /// a 32-bit float bitcast from an unsigned integer.
+  // lib/core/texture_renderer.dart
+
+  /// Order texture cache dims so we can reuse storage.
+  int _orderTexW = 0, _orderTexH = 0;
+
+  void _uploadOrderTexture(List<int> sortedIndices) {
+    if (sortedIndices.isEmpty) return;
+
+    const texWidth = GsConst.splatsPerRow; // 512
+    final neededHeight = (sortedIndices.length + texWidth - 1) ~/ texWidth;
+
+    // (Re)allocate texture storage only if dims changed or not created yet.
+    final needAlloc = _orderTexture == null ||
+        _orderTexW != texWidth ||
+        _orderTexH < neededHeight;
+
+    if (needAlloc) {
+      // (Re)create texture with enough rows; keep some headroom to reduce reallocs.
+      _orderTexW = texWidth;
+      _orderTexH = (neededHeight * 5) ~/ 4 + 1; // +25% headroom
+
+      if (_orderTexture != null) {
+        _gl.deleteTexture(_orderTexture!);
+      }
+      _orderTexture = _gl.createTexture();
+      _gl
+        ..bindTexture(WebGL.TEXTURE_2D, _orderTexture)
+        ..texParameteri(
+            WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
+        ..texParameteri(
+            WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
+        ..texParameteri(
+            WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
+        ..texParameteri(
+            WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST);
+
+      // Allocate storage (R32F)
+      _gl.texImage2D(WebGL.TEXTURE_2D, 0, WebGL.R32F, _orderTexW, _orderTexH, 0,
+          WebGL.RED, WebGL.FLOAT, null);
+    } else {
+      _gl.bindTexture(WebGL.TEXTURE_2D, _orderTexture);
     }
 
-    for (var i = 0; i < splatCount; i++) {
-      _persistentIndexArray![i] = i.toDouble();
+    // Pack the permutation as float bits.
+    final totalTexels = neededHeight * texWidth;
+    final packed = Float32Array(totalTexels);
+    for (var i = 0; i < totalTexels; i++) {
+      final v = (i < sortedIndices.length) ? sortedIndices[i] : 0;
+      packed[i] = Float32List.view((Uint32List(1)..[0] = v).buffer)[0];
     }
 
-    _gl
-      ..bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer)
-      ..bufferData(
-        WebGL.ARRAY_BUFFER,
-        _persistentIndexArray,
-        WebGL.DYNAMIC_DRAW,
-      );
-
-    _vertexCount = splatCount;
+    // Upload only the needed rows.
+    _gl.texSubImage2D(WebGL.TEXTURE_2D, 0, 0, 0, texWidth, neededHeight,
+        WebGL.RED, WebGL.FLOAT, packed);
   }
+
+void _uploadIndexBuffer(int splatCount) {
+  final batchSize = GsConst.splatsPerInstance;
+  final groups = (splatCount + batchSize - 1) ~/ batchSize;
+
+  _persistentIndexArray ??= Float32Array(groups);
+  if (_persistentIndexArray!.length < groups) {
+    _persistentIndexArray = Float32Array(groups);
+  }
+  for (var i = 0; i < groups; i++) {
+    _persistentIndexArray![i] = (i * batchSize).toDouble();
+  }
+
+  _gl
+    ..bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer)
+    ..bufferData(WebGL.ARRAY_BUFFER, _persistentIndexArray, WebGL.DYNAMIC_DRAW);
+
+  _vertexCount = groups; // draw this many instances, not splats
+}
 
   // Render helpers
 
@@ -806,6 +934,14 @@ Float32List _invViewRot3x3() {
     if (_uTexture != null) {
       _gl.uniform1i(_uTexture!, 0);
     }
+    if (_uSplatCount != null) {
+      // Provide the total number of splats to the shader so it can cull
+      // vertices that fall outside the range in the final batch.
+      _gl.uniform1i(_uSplatCount!, _splatCount);
+    }
+    if (_uOrderTexture != null && _orderTexture != null) {
+      _gl.uniform1i(_uOrderTexture!, 1); // will bind to texture unit 1
+    }
 
     _gl
       ..activeTexture(WebGL.TEXTURE0)
@@ -815,18 +951,33 @@ Float32List _invViewRot3x3() {
       _gl
         ..enableVertexAttribArray(_aPosition!)
         ..bindBuffer(WebGL.ARRAY_BUFFER, _vertexBuffer)
-        ..vertexAttribPointer(_aPosition!, 2, WebGL.FLOAT, false, 0, 0);
+        ..vertexAttribPointer(_aPosition!, 3, WebGL.FLOAT, false, 0, 0);
     }
 
     if (_aIndex != null) {
       _gl
         ..enableVertexAttribArray(_aIndex!)
-      ..bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer)
+        ..bindBuffer(WebGL.ARRAY_BUFFER, _instanceIndexBuffer)
         ..vertexAttribPointer(_aIndex!, 1, WebGL.FLOAT, false, 0, 0)
         ..vertexAttribDivisor(_aIndex!, 1);
     }
 
-    _gl.drawArraysInstanced(WebGL.TRIANGLE_FAN, 0, 4, _vertexCount);
+    // Bind order texture to texture unit 1 before drawing if present.
+    if (_orderTexture != null) {
+      _gl
+        ..activeTexture(WebGL.TEXTURE1)
+        ..bindTexture(WebGL.TEXTURE_2D, _orderTexture);
+    }
+
+    // Draw the batched quads.  Each instance draws a set of triangles
+    // defined by the index buffer.  We use drawElementsInstanced with
+    // UNSIGNED_SHORT indices for better bandwidth efficiency.  The divisor on
+    // the index attribute ensures that each instance references the
+    // correct base index in the order texture.
+    _gl
+      ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _elementBuffer)
+      ..drawElementsInstanced(WebGL.TRIANGLES, _indicesPerBatch,
+          WebGL.UNSIGNED_SHORT, 0, _vertexCount);
     // Unbind resources after drawing to prevent disposal issues
     if (_aPosition != null) {
       _gl.disableVertexAttribArray(_aPosition!);
@@ -834,8 +985,9 @@ Float32List _invViewRot3x3() {
     if (_aIndex != null) {
       _gl.disableVertexAttribArray(_aIndex!);
     }
-    _gl..bindTexture(WebGL.TEXTURE_2D, null)
-    ..bindBuffer(WebGL.ARRAY_BUFFER, null);
+    _gl
+      ..bindTexture(WebGL.TEXTURE_2D, null)
+      ..bindBuffer(WebGL.ARRAY_BUFFER, null);
   }
 
   // Matrix helpers
@@ -985,6 +1137,8 @@ Float32List _invViewRot3x3() {
     _uFocal = null;
     _uViewport = null;
     _uTexture = null;
+    _uSplatCount = null;
+    _uOrderTexture = null;
     _aPosition = null;
     _aIndex = null;
     _uniformLocationCache.clear();
@@ -1001,6 +1155,20 @@ Float32List _invViewRot3x3() {
         gl.deleteBuffer(_instanceIndexBuffer!);
       } catch (_) {}
       _instanceIndexBuffer = null;
+    }
+
+    if (_elementBuffer != null) {
+      try {
+        gl.deleteBuffer(_elementBuffer!);
+      } catch (_) {}
+      _elementBuffer = null;
+    }
+
+    if (_orderTexture != null) {
+      try {
+        gl.deleteTexture(_orderTexture!);
+      } catch (_) {}
+      _orderTexture = null;
     }
 
     if (_texture != null) {

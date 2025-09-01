@@ -6,12 +6,23 @@ uniform highp sampler2D u_texture; // Gaussian splat data texture (RGBA32F forma
 uniform mat4 projection, view;
 uniform vec2 focal;
 uniform vec2 viewport;
+// Order texture storing sorted indices.  Each texel contains a 32-bit
+// float bitcast from an unsigned integer representing the splat index.  The
+// texture is R32F and has width equal to GsConst.splatsPerRow (512).  The
+// vertex shader uses this to map from the batch/offset into the actual
+// splat index.  If u_orderTexture is not bound the lookup returns zero.
+uniform highp sampler2D u_orderTexture;
 
-in vec2 position;       // Quad corner coordinates (-1 to 1)
-in float index;         // Gaussian splat index
+in vec3 position;       // Quad corner coordinates (-1 to 1) with local offset in .z
+// Base index into the order texture.  Each instance provides the start of
+// the group in the order texture; the local offset (position.z) adds to
+// this to obtain the texel index.
+in float index;
 
 out mediump vec4 vColor;
 out mediump vec2 vPosition;     // Quad corner coordinates for fragment shader
+
+uniform int splatCount;
 
 // ---------- helpers unchanged ----------
 float unpackHalf(uint half_val) {
@@ -159,9 +170,40 @@ mat3 quatToMat3(vec4 R) {
 }
 
 void main() {
-    int idx = int(index);
+    // Compute the absolute index into the order texture: base (int(index)) +
+    // local offset (position.z).  Both values are encoded as floats.  The
+    // order texture is laid out as a 2D texture with width 512 (2^9) and
+    // arbitrary height.  We first compute the 1D index into this texture.
+    int orderIdx = int(index) + int(position.z + 0.5);
 
-    // base_uv for 5-texel layout
+    // If this vertex references an entry beyond the number of splats, push it
+    // behind the far plane.  This culls extra vertices in the final batch.
+    if (orderIdx >= splatCount) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
+
+    // Lookup the actual splat index from the order texture.  Each texel
+    // contains a 32-bit float bitcast from an integer.  Compute the texel
+    // coordinates by splitting orderIdx into low 9 bits (x) and the
+    // remaining bits (y).  The texture width (512) matches GsConst.splatsPerRow.
+    const int ORDER_TEX_MASK = 0x1ff; // 512 - 1
+    int orderX = orderIdx & ORDER_TEX_MASK;
+    int orderY = orderIdx >> 9;
+    // Fetch the stored index as float and bitcast to uint then int
+    uint packed = floatBitsToUint(texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r);
+    int idx = int(packed);
+
+    // If the fetched index is out of bounds (should not happen but check), cull
+    if (idx >= splatCount) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
+
+    // base_uv for 5-texel layout.  After resolving the actual splat index we
+    // compute the horizontal coordinate using the low 9 bits (masked by
+    // 0x1ff) and the vertical coordinate using the high bits.  Each splat
+    // occupies 5 texels horizontally.
     ivec2 base_uv = ivec2((idx & 0x1ff) * 5, idx >> 9);
 
     // Fetch P0 and P1 (pos/quat, scale/color)
@@ -281,7 +323,7 @@ void main() {
     vec3 final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0f)));
 
 // Corner clipping & final position
-    vec2 corner_uv = position;
+    vec2 corner_uv = position.xy;
     clipCorner(majorAxis, minorAxis, corner_uv, base_color_srgb.a);
 
     vec2 offsetClip = (corner_uv.x * majorAxis + corner_uv.y * minorAxis) * c; // 'c' already computed above

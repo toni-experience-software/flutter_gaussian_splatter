@@ -11,6 +11,9 @@ uniform vec2 viewport;
 // The vertex shader uses this to map from the batch/offset into the actual
 // splat index. Uses integer sampling for optimal performance.
 uniform highp usampler2D u_orderTexture;
+// Maximum allowed ellipse radius in pixels before culling.  Splats whose
+// projected major or minor axis exceeds this threshold are discarded.
+uniform float uMaxSplatSize;
 
 in vec3 position;       // Quad corner coordinates (-1 to 1) with local offset in .z
 // Base index computed from gl_InstanceID - no attribute needed
@@ -279,6 +282,17 @@ void main() {
 
     // early out: both axes smaller than 2 px
     if(s1 < 2.0f && s2 < 2.0f) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
+
+    // Cull splats whose projected radius exceeds a maximum threshold.
+    // A very large ellipse implies that the splat covers the entire
+    // viewport and will result in significant overdraw.  By discarding
+    // such splats we approximate the behaviour of the work‑buffer
+    // pipeline at close distances.  The threshold is provided via
+    // uniform uMaxSplatSize.
+    if (max(s1, s2) > uMaxSplatSize) {
         gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
         return;
     }

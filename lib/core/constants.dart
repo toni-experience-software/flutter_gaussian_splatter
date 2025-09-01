@@ -98,4 +98,19 @@ abstract final class GsConst {
   /// Fallback linear scale if PLY lacks scale_* properties.
   static const double defaultScale = 0.01;
 
+  /// Maximum pixel diameter for a single splat in screen space.
+  ///
+  /// When zooming in close to a Gaussian, its projected ellipse can
+  /// cover a very large portion of the viewport.  Rendering such
+  /// extremely large splats is expensive because it forces the fragment
+  /// shader to run over many pixels and all overlapping splats still
+  /// contribute to the scene due to alpha blending.  PlayCanvas
+  /// addresses this with a work‑buffer pipeline; as a lightweight
+  /// approximation we provide a configurable threshold in pixels
+  /// beyond which splats are culled completely.  This reduces
+  /// overdraw at close distances and improves performance without
+  /// affecting distant views.  Users can adjust this value based on
+  /// their target device performance.
+  static const double maxSplatPixelSize = 256.0;
+
 }

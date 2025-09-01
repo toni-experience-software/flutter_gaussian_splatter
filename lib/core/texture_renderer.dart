@@ -111,6 +111,11 @@ class TextureGaussianRenderer {
   UniformLocation? _uSplatCount;
   UniformLocation? _uOrderTexture;
 
+  // Maximum splat size uniform for lightweight culling.  When bound,
+  // the vertex shader discards splats whose projected radius exceeds
+  // this value.  See constants.maxSplatPixelSize.
+  UniformLocation? _uMaxSplatSize;
+
   //Background
   SkydomeBackground? _bg;
   String? _bgAssetPath; // for reload after context loss
@@ -612,6 +617,9 @@ class TextureGaussianRenderer {
     _uTexture = _uniform('u_texture');
     _uSplatCount = _uniform('splatCount');
     _uOrderTexture = _uniform('u_orderTexture');
+
+    // Maximum splat size uniform used for lightweight culling.
+    _uMaxSplatSize = _uniform('uMaxSplatSize');
   }
 
   void _cacheAttributeLocations() {
@@ -901,6 +909,14 @@ void _uploadIndexBuffer(int splatCount) {
     if (_uOrderTexture != null && _orderTexture != null) {
       _gl.uniform1i(_uOrderTexture!, 1); // will bind to texture unit 1
     }
+    // Set the maximum splat size for culling.  The value is taken
+    // from the constants class and controls the threshold in pixels
+    // beyond which splats are culled in the vertex shader.  When the
+    // uniform is not found in the current shader (older versions), this
+    // call has no effect.
+    if (_uMaxSplatSize != null) {
+      _gl.uniform1f(_uMaxSplatSize!, GsConst.maxSplatPixelSize.toDouble());
+    }
 
     _gl
       ..activeTexture(WebGL.TEXTURE0)
@@ -1086,6 +1102,7 @@ void _uploadIndexBuffer(int splatCount) {
     _uTexture = null;
     _uSplatCount = null;
     _uOrderTexture = null;
+    _uMaxSplatSize = null;
     _aPosition = null;
     _uniformLocationCache.clear();
 

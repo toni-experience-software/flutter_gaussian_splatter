@@ -6,18 +6,14 @@ uniform highp sampler2D u_texture; // Gaussian splat data texture (RGBA32F forma
 uniform mat4 projection, view;
 uniform vec2 focal;
 uniform vec2 viewport;
-// Order texture storing sorted indices.  Each texel contains a 32-bit
-// float bitcast from an unsigned integer representing the splat index.  The
-// texture is R32F and has width equal to GsConst.splatsPerRow (512).  The
-// vertex shader uses this to map from the batch/offset into the actual
-// splat index.  If u_orderTexture is not bound the lookup returns zero.
-uniform highp sampler2D u_orderTexture;
+// Order texture storing sorted indices as native unsigned integers.
+// The texture is R32UI and has width equal to GsConst.splatsPerRow (512).
+// The vertex shader uses this to map from the batch/offset into the actual
+// splat index. Uses integer sampling for optimal performance.
+uniform highp usampler2D u_orderTexture;
 
 in vec3 position;       // Quad corner coordinates (-1 to 1) with local offset in .z
-// Base index into the order texture.  Each instance provides the start of
-// the group in the order texture; the local offset (position.z) adds to
-// this to obtain the texel index.
-in float index;
+// Base index computed from gl_InstanceID - no attribute needed
 
 out mediump vec4 vColor;
 out mediump vec2 vPosition;     // Quad corner coordinates for fragment shader
@@ -170,11 +166,10 @@ mat3 quatToMat3(vec4 R) {
 }
 
 void main() {
-    // Compute the absolute index into the order texture: base (int(index)) +
-    // local offset (position.z).  Both values are encoded as floats.  The
-    // order texture is laid out as a 2D texture with width 512 (2^9) and
-    // arbitrary height.  We first compute the 1D index into this texture.
-    int orderIdx = int(index) + int(position.z + 0.5);
+    // Compute the absolute index into the order texture using gl_InstanceID.
+    // Each instance draws 128 splats, so base = gl_InstanceID * 128.
+    // Add local offset from position.z to get the final index.
+    int orderIdx = gl_InstanceID * 128 + int(position.z + 0.5);
 
     // If this vertex references an entry beyond the number of splats, push it
     // behind the far plane.  This culls extra vertices in the final batch.
@@ -183,16 +178,15 @@ void main() {
         return;
     }
 
-    // Lookup the actual splat index from the order texture.  Each texel
-    // contains a 32-bit float bitcast from an integer.  Compute the texel
-    // coordinates by splitting orderIdx into low 9 bits (x) and the
-    // remaining bits (y).  The texture width (512) matches GsConst.splatsPerRow.
+    // Lookup the actual splat index from the order texture using native integer sampling.
+    // Compute the texel coordinates by splitting orderIdx into low 9 bits (x) and the
+    // remaining bits (y). The texture width (512) matches GsConst.splatsPerRow.
     const int ORDER_TEX_MASK = 0x1ff; // 512 - 1
     int orderX = orderIdx & ORDER_TEX_MASK;
     int orderY = orderIdx >> 9;
-    // Fetch the stored index as float and bitcast to uint then int
-    uint packed = floatBitsToUint(texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r);
-    int idx = int(packed);
+    // Fetch the stored index directly as unsigned integer - no bitcast needed
+    uint uid = texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r;
+    int idx = int(uid);
 
     // If the fetched index is out of bounds (should not happen but check), cull
     if (idx >= splatCount) {

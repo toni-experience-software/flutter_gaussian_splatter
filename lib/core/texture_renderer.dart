@@ -8,12 +8,13 @@ import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/background/background_skydome.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
-import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
+import 'package:flutter_gaussian_splatter/sorting/depth_sorter.dart' as depth;
 import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/render_stats.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
+import 'package:flutter_gaussian_splatter/sorting/sort_result.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
@@ -527,7 +528,7 @@ class TextureGaussianRenderer {
 
   // Depth‑sorting callback
 
-  void _onDepthSortComplete(depth.SortResult result) {
+  void _onDepthSortComplete(SortResult result) {
     // When depth sorting completes we receive the full sorted index list in
     // result.depthIndex.  Update the order texture with this list so that
     // the vertex shader can map from batch offset to actual splat index.

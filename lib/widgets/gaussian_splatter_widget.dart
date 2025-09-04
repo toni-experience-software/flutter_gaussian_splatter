@@ -10,7 +10,7 @@ import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/file_processor.dart';
-import 'package:flutter_gaussian_splatter/core/texture_renderer.dart';
+import 'package:flutter_gaussian_splatter/core/texture_renderer_copy.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// A widget that renders Gaussian splat data using WebGL/ANGLE.

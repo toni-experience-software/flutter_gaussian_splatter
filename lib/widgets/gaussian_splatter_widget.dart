@@ -73,7 +73,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   double _orbitDistance = 1;
   double _theta = 0;
   double _phi = math.pi / 2;
-  final vm.Vector3 _orbitOrigin = vm.Vector3(0,-0.1,0); // center of the orbit
+  final vm.Vector3 _orbitOrigin = vm.Vector3(0, -0.1, 0); // center of the orbit
 
   // Stats
   String _statsText = '';
@@ -121,14 +121,12 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       await _renderer.initialize();
       _renderer.camera = camera;
 
-
-
       await _renderer.setupTexture(
         width: validSize.width,
         height: validSize.height,
         enableProfiling: widget.enableProfiling,
       );
-      if(widget.backgroundAssetPath != null) {
+      if (widget.backgroundAssetPath != null) {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
       }
 
@@ -262,48 +260,45 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
   }
 
   void _applyCameraFromSpherical() {
-  final r = _orbitDistance;
+    final r = _orbitDistance;
 
-  final rel = vm.Vector3(
-    r * math.sin(_phi) * math.sin(_theta),
-    r * math.cos(_phi),
-    r * math.sin(_phi) * math.cos(_theta),
-  );
+    final rel = vm.Vector3(
+      r * math.sin(_phi) * math.sin(_theta),
+      r * math.cos(_phi),
+      r * math.sin(_phi) * math.cos(_theta),
+    );
 
-  // Position is orbit-origin + relative spherical offset
-  final pos = _orbitOrigin + rel;
+    // Position is orbit-origin + relative spherical offset
+    final pos = _orbitOrigin + rel;
 
-  // Look at the orbit origin
-  final forward = (_orbitOrigin - pos).normalized();
-  final up = vm.Vector3(0, -1, 0); // your coordinate system
-  final right = up.cross(forward).normalized();
-  final trueUp = forward.cross(right).normalized();
-  final rot = vm.Matrix3.columns(right, trueUp, forward);
+    // Look at the orbit origin
+    final forward = (_orbitOrigin - pos).normalized();
+    final up = vm.Vector3(0, -1, 0); // your coordinate system
+    final right = up.cross(forward).normalized();
+    final trueUp = forward.cross(right).normalized();
+    final rot = vm.Matrix3.columns(right, trueUp, forward);
 
-  _renderer.camera = _renderer.camera?.withUpdatedPosAndRot(
-    position: pos,
-    rotation: rot,
-  );
-}
+    _renderer.camera = _renderer.camera?.copyWithPose(
+      position: pos,
+      rotation: rot,
+    );
+  }
 
+  void _orbitCamera(double deltaX, double deltaY) {
+    _theta -= deltaX;
+    _phi = (_phi - deltaY).clamp(0.01, math.pi - 0.01);
+    _applyCameraFromSpherical();
+  }
 
-void _orbitCamera(double deltaX, double deltaY) {
-  _theta -= deltaX;
-  _phi = (_phi - deltaY).clamp(0.01, math.pi - 0.01);
-  _applyCameraFromSpherical();
-}
-
-void _zoomCamera(double delta) {
-  _orbitDistance =
-      (_orbitDistance + delta).clamp(_kMinOrbitDistance, _kMaxOrbitDistance);
-  _applyCameraFromSpherical();
-}
-
-
+  void _zoomCamera(double delta) {
+    _orbitDistance =
+        (_orbitDistance + delta).clamp(_kMinOrbitDistance, _kMaxOrbitDistance);
+    _applyCameraFromSpherical();
+  }
 
   Future<void> _handleResize(Size newSize) async {
     try {
-      final camera = _renderer.camera?.withUpdatedViewport(
+      final camera = _renderer.camera?.copyWithViewport(
         newWidth: newSize.width,
         newHeight: newSize.height,
       );
@@ -326,8 +321,6 @@ void _zoomCamera(double delta) {
   void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
     _renderer.setBackgroundRotation(yawDegrees, pitchDegrees);
   }
-
-
 
   Widget _buildStatsOverlay() {
     return Positioned(

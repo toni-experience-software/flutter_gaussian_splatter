@@ -141,15 +141,15 @@ class TextureGaussianRenderer {
 
   /// Enables the background using an asset image.
   Future<void> enableBackgroundFromAsset(String assetPath) async {
-    _bg ??= SkydomeBackground(_gl);
-    await _bg!.setImageFromAsset(assetPath);
+    _bg ??= SkydomeBackground(assetPath: assetPath);
+    await _bg!.init(_gl);
     _bg?.setYawPitchDegrees(90, 0); // pitch only → flips sky/ground
     _bgAssetPath = assetPath;
   }
 
   /// Disables the background.
   void disableBackground() {
-    _bg?.dispose();
+    _bg?.dispose(_gl);
     _bg = null;
     _bgAssetPath = null;
   }
@@ -163,18 +163,6 @@ class TextureGaussianRenderer {
   /// Only disable if nothing downstream samples the framebuffer's alpha channel.
   void setDisableAlphaWrite({required bool disable}) {
     _disableAlphaWrite = disable;
-  }
-
-  Float32List _invViewRot3x3() {
-    final R = _camera!.rotation; // camera->world
-    return Float32List.fromList([
-      // col0
-      R.row0.x, R.row1.x, R.row2.x,
-      // col1
-      R.row0.y, R.row1.y, R.row2.y,
-      // col2
-      R.row0.z, R.row1.z, R.row2.z,
-    ]);
   }
 
   // Life‑cycle
@@ -427,7 +415,7 @@ class TextureGaussianRenderer {
         [-1.0, -1.0],
         [1.0, -1.0],
         [1.0, 1.0],
-        [-1.0, 1.0]
+        [-1.0, 1.0],
       ];
       for (final corner in corners) {
         vertices.addAll([corner[0], corner[1], quadIdx.toDouble()]);
@@ -451,9 +439,10 @@ class TextureGaussianRenderer {
     for (var quadIdx = 0; quadIdx < GsConst.splatsPerInstance; quadIdx++) {
       final baseVertex = quadIdx * 4;
       // First triangle: [0, 1, 2]
-      indicesList.addAll([baseVertex + 0, baseVertex + 1, baseVertex + 2]);
-      // Second triangle: [0, 2, 3]
-      indicesList.addAll([baseVertex + 0, baseVertex + 2, baseVertex + 3]);
+      indicesList
+        ..addAll([baseVertex + 0, baseVertex + 1, baseVertex + 2])
+        // Second triangle: [0, 2, 3]
+        ..addAll([baseVertex + 0, baseVertex + 2, baseVertex + 3]);
     }
 
     _elementBuffer = _gl.createBuffer();
@@ -547,7 +536,7 @@ class TextureGaussianRenderer {
     // Compute the number of instanced batches needed to cover all sorted
     // indices.  Each batch contains [GsConst.splatsPerInstance] entries.
     // With gl_InstanceID, we don't need an instance buffer anymore.
-    final batchSize = GsConst.splatsPerInstance;
+    const batchSize = GsConst.splatsPerInstance;
     final groups = (result.vertexCount + batchSize - 1) ~/ batchSize;
 
     _vertexCount = groups;
@@ -710,17 +699,38 @@ class TextureGaussianRenderer {
       _gl
         ..bindTexture(WebGL.TEXTURE_2D, _orderTexture)
         ..texParameteri(
-            WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
+          WebGL.TEXTURE_2D,
+          WebGL.TEXTURE_WRAP_S,
+          WebGL.CLAMP_TO_EDGE,
+        )
         ..texParameteri(
-            WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
+          WebGL.TEXTURE_2D,
+          WebGL.TEXTURE_WRAP_T,
+          WebGL.CLAMP_TO_EDGE,
+        )
         ..texParameteri(
-            WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
+          WebGL.TEXTURE_2D,
+          WebGL.TEXTURE_MIN_FILTER,
+          WebGL.NEAREST,
+        )
         ..texParameteri(
-            WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST);
+          WebGL.TEXTURE_2D,
+          WebGL.TEXTURE_MAG_FILTER,
+          WebGL.NEAREST,
+        );
 
       // Allocate storage (R32UI - integer format)
-      _gl.texImage2D(WebGL.TEXTURE_2D, 0, WebGL.R32UI, _orderTexW, _orderTexH,
-          0, WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, null);
+      _gl.texImage2D(
+        WebGL.TEXTURE_2D,
+        0,
+        WebGL.R32UI,
+        _orderTexW,
+        _orderTexH,
+        0,
+        WebGL.RED_INTEGER,
+        WebGL.UNSIGNED_INT,
+        null,
+      );
     } else {
       _gl.bindTexture(WebGL.TEXTURE_2D, _orderTexture);
     }
@@ -734,8 +744,17 @@ class TextureGaussianRenderer {
     }
 
     // Upload only the needed rows using integer format
-    _gl.texSubImage2D(WebGL.TEXTURE_2D, 0, 0, 0, texWidth, neededHeight,
-        WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, u32);
+    _gl.texSubImage2D(
+      WebGL.TEXTURE_2D,
+      0,
+      0,
+      0,
+      texWidth,
+      neededHeight,
+      WebGL.RED_INTEGER,
+      WebGL.UNSIGNED_INT,
+      u32,
+    );
   }
 
   void _uploadIndexBuffer(int splatCount) {
@@ -760,13 +779,7 @@ class TextureGaussianRenderer {
 
     // --- optional background ---
     if (_bg?.isReady ?? false) {
-      _bg!.draw(
-        camera!.width,
-        camera!.height,
-        _camera!.fx,
-        _camera!.fy,
-        _invViewRot3x3(),
-      );
+      _bg!.execute(_gl, camera!);
     }
 
     if (camera == null || _splatBuffer == null || _splatCount <= 0) {
@@ -991,13 +1004,13 @@ class TextureGaussianRenderer {
     // Recreate background with new context if previously enabled
     if (_bg != null) {
       try {
-        _bg!.dispose();
+        _bg!.dispose(_gl);
       } catch (_) {}
-      _bg = SkydomeBackground(_gl);
+      _bg = SkydomeBackground(assetPath: _bgAssetPath!);
       _bg?.setYawPitchDegrees(0, 0); // pitch only → flips sky/ground
       if (_bgAssetPath != null) {
         try {
-          await _bg!.setImageFromAsset(_bgAssetPath!);
+          await _bg!.init(_gl);
         } catch (_) {}
       }
     }

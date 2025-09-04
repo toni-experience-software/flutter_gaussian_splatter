@@ -12,74 +12,12 @@ import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
 import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
+import 'package:flutter_gaussian_splatter/core/perf/render_stats.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
 typedef RendererCallback = void Function();
-
-/// Immutable per‑frame rendering performance statistics.
-///
-/// Performance is measured using exponentially weighted moving averages (EWMA)
-/// with automatic GPU profiling when supported by the WebGL context.
-@immutable
-class RenderStats {
-  /// Creates a new instance of [RenderStats].
-  const RenderStats({
-    required this.fps,
-    required this.vertexCount,
-    required this.lastFrameTime,
-    this.cpuFrameTimeMs,
-    this.gpuFrameTimeMs,
-    this.profilerType,
-  });
-
-  /// CPU-based frames per second (smoothed with EWMA).
-  ///
-  /// This measures the total frame time from start to finish on the main
-  /// thread.
-  final double fps;
-
-  /// Number of Gaussian splat vertices rendered in the last frame.
-  final int vertexCount;
-
-  /// Timestamp when the last frame was completed.
-  final DateTime lastFrameTime;
-
-  /// Average CPU frame time in milliseconds (smoothed with EWMA).
-  ///
-  /// Measures the time spent on the main thread per frame.
-  final double? cpuFrameTimeMs;
-
-  /// Average GPU frame time in milliseconds (smoothed with EWMA), if available.
-  ///
-  /// Only available when GPU timing extensions are supported. May be null
-  /// if GPU profiling is unavailable or if measurements are not ready.
-  final double? gpuFrameTimeMs;
-
-  /// Type of performance profiler being used.
-  ///
-  /// - 'GPU': Using EXT_disjoint_timer_query for accurate GPU timing
-  /// - 'Sampled': Using glFinish() sampling for approximate GPU timing
-  /// - 'CPU': CPU-only timing fallback
-  final String? profilerType;
-
-  /// GPU-based frames per second, if GPU timing is available.
-  double? get gpuFps => gpuFrameTimeMs != null && gpuFrameTimeMs! > 0
-      ? 1000.0 / gpuFrameTimeMs!
-      : null;
-
-  /// True if GPU timing measurements are available.
-  bool get hasGpuTiming => gpuFrameTimeMs != null;
-
-  @override
-  String toString() {
-    final gpuInfo =
-        hasGpuTiming ? ', gpu: ${gpuFrameTimeMs!.toStringAsFixed(1)}ms' : '';
-    final profilerInfo = profilerType != null ? ' [$profilerType]' : '';
-    return 'RenderStats(fps: ${fps.toStringAsFixed(1)}, vtx: $vertexCount$gpuInfo$profilerInfo)';
-  }
-}
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
 ///
@@ -164,10 +102,6 @@ class TextureGaussianRenderer {
 
   // Optimization settings
   bool _disableAlphaWrite = true;
-
-  // Shader sources (kept for context‑loss recovery)
-  late final String _vertexShaderSource;
-  late final String _fragmentShaderSource;
 
   // Scratch arrays (re‑used to avoid per‑frame allocs)
   Float32Array? _splatTexScratch; // Reused for texture uploads
@@ -357,21 +291,23 @@ class TextureGaussianRenderer {
   }
 
   /// Resizes the render target. If a camera is set, its intrinsics are updated
-  /// to preserve the current field‑of‑view.
-  Future<bool> resize(GaussianCamera camera) async {
+  /// to preserve the current field-of-view.
+  ///
+  /// Returns `true` if the texture actually resized (and we updated matrices).
+  Future<bool> resize(GaussianCamera nextCamera) async {
     if (_isResizing) return false;
 
-    // No-op if size unchanged
-    if (_camera != null &&
-        camera.width == _camera!.width &&
-        camera.height == _camera!.height) {
-      return false;
+    final current = _camera;
+    if (current != null &&
+        nextCamera.width == current.width &&
+        nextCamera.height == current.height) {
+      return false; // no-op
     }
 
     _isResizing = true;
     try {
-      // Camera becomes the source of truth - use setter to trigger depth sort
-      this.camera = camera;
+      // Camera is the source of truth; setter may trigger depth sort, etc.
+      camera = nextCamera;
 
       final desired = AngleOptions(
         width: _camera!.width,
@@ -382,73 +318,34 @@ class TextureGaussianRenderer {
         customRenderer: false,
       );
 
-      // ---- 1) Try in-place resize (preserves GL context & GL objects)
-      try {
-        await _angle.resize(_targetTexture, desired);
-      } catch (_) {
-        debugPrint('resize failed');
-        // ignore and fall back below
-      }
+      // If _targetTexture isn't statically typed, guard and early-return.
+      final anyTexture = _targetTexture;
+      final resized = await _tryResizeAngle(anyTexture, desired);
+      if (!resized) return false;
 
-      // If resize worked, the plugin updates texture.options in place.
-      if (_targetTexture.options.width == desired.width &&
-          _targetTexture.options.height == desired.height) {
-        _updateProjectionMatrix();
-        _updateViewMatrix();
-        return true;
-      }
-
-      // ---- 2) Fallback: create a new texture, switch, then free the old one
-      final previousTexture = _targetTexture;
-      final previousGl = _gl;
-
-      FlutterAngleTexture? newTexture;
-      try {
-        newTexture = await _angle.createTexture(desired);
-        final newGl = newTexture.getContext();
-
-        // Switch targets
-        _gl = newGl;
-        _targetTexture = newTexture;
-
-        // Since the RenderingContext wrapper instance changed,
-        // rebuild GL objects
-        _disposeGlObjects();
-        await _recoverFromContextLoss();
-
-        // Free the old native texture (fixes leak)
-        try {
-          await _angle.deleteTexture(previousTexture);
-        } catch (e) {
-          debugPrint('Warning: deleting previous texture failed: $e');
-        }
-
-        _updateProjectionMatrix();
-        _updateViewMatrix();
-        return true;
-      } catch (e, st) {
-        // If we created a new texture, free it
-        if (newTexture != null) {
-          try {
-            await _angle.deleteTexture(newTexture);
-          } catch (ee) {
-            debugPrint('Warning: deleting failed texture during rollback: $ee');
-          }
-        }
-        // Roll back to previous target/context if still valid
-        try {
-          _targetTexture = previousTexture;
-          _gl = previousTexture.getContext();
-        } catch (ee) {
-          debugPrint('Warning: cannot roll back to previous texture: $ee');
-          rethrow;
-        }
-        debugPrint('Resize failed: $e\n$st');
-        rethrow;
-      }
+      _updateProjectionMatrix();
+      _updateViewMatrix();
+      return true;
     } finally {
       _isResizing = false;
     }
+  }
+
+  /// Attempts to resize the ANGLE target and verifies the texture dimensions.
+  /// Logs but does not throw on failure.
+  Future<bool> _tryResizeAngle(
+    FlutterAngleTexture texture,
+    AngleOptions desired,
+  ) async {
+    try {
+      await _angle.resize(texture, desired);
+    } catch (e, st) {
+      debugPrint('Angle.resize failed: $e\n$st');
+      // fall through to verification
+    }
+
+    final opts = texture.options;
+    return opts.width == desired.width && opts.height == desired.height;
   }
 
   /// Disposes *all* resources. The instance must not be used afterwards.

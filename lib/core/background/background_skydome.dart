@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/services.dart' as services;
 import 'package:flutter_angle/flutter_angle.dart';
+import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 
 /// Minimal, optional equirectangular skydome background.
 class SkydomeBackground {
@@ -13,7 +14,7 @@ class SkydomeBackground {
   /// Underlying WebGL rendering context.
   final RenderingContext _gl;
 
-  Program? _prog;
+  Program? _program;
   UniformLocation? _uBg;
   UniformLocation? _uViewport;
   UniformLocation? _uFocal;
@@ -21,7 +22,9 @@ class SkydomeBackground {
   UniformLocation? _uBgRot;
 
   WebGLTexture? _tex;
-  bool _ready = false;
+
+  /// Whether the skydome is initialized and ready to be drawn.
+  bool get isReady => _program != null && _tex != null;
 
   /// Background rotation as a 3x3 matrix (column-major).
   ///
@@ -37,9 +40,6 @@ class SkydomeBackground {
     0,
     1,
   ]);
-
-  /// Whether the skydome is initialized and ready to be drawn.
-  bool get isReady => _ready;
 
   /// Loads the skydome texture from a Flutter asset and prepares mipmaps.
   ///
@@ -79,7 +79,6 @@ class SkydomeBackground {
     );
 
     _gl.generateMipmap(WebGL.TEXTURE_2D);
-    _ready = true;
   }
 
   /// Draws the skydome using the provided viewport and camera parameters.
@@ -94,10 +93,10 @@ class SkydomeBackground {
     double fy,
     Float32List invViewRot3x3,
   ) {
-    if (!_ready || _prog == null || _tex == null) return;
+    if (_program == null || _tex == null) return;
 
     _gl
-      ..useProgram(_prog)
+      ..useProgram(_program)
       ..disable(WebGL.BLEND)
       ..disable(WebGL.DEPTH_TEST)
       ..activeTexture(WebGL.TEXTURE0)
@@ -128,7 +127,7 @@ class SkydomeBackground {
       cy,
       sy * sp,
       sy * cp,
-      0.0,
+      0,
       cp,
       -sp,
       -sy,
@@ -145,19 +144,18 @@ class SkydomeBackground {
       } catch (_) {}
       _tex = null;
     }
-    if (_prog != null) {
+    if (_program != null) {
       try {
-        _gl.deleteProgram(_prog!);
+        _gl.deleteProgram(_program!);
       } catch (_) {}
-      _prog = null;
+      _program = null;
     }
     _uBg = _uViewport = _uFocal = _uInvViewRot = _uBgRot = null;
-    _ready = false;
   }
 
-  /// Compiles and links the skydome shader program and caches uniform locations.
+  /// Compiles and links the skydome shader program and caches uniform locations
   Future<void> _ensureProgram() async {
-    if (_prog != null && _gl.isProgram(_prog!) == true) return;
+    if (_program != null && _gl.isProgram(_program!) == true) return;
 
     final vertexShaderCode = await services.rootBundle.loadString(
       'packages/flutter_gaussian_splatter/shaders/bg_vert.glsl',
@@ -166,54 +164,16 @@ class SkydomeBackground {
       'packages/flutter_gaussian_splatter/shaders/bg_frag.glsl',
     );
 
-    final vs = _compile(WebGL.VERTEX_SHADER, vertexShaderCode);
-    final fs = _compile(WebGL.FRAGMENT_SHADER, fragmentShaderCode);
+    _program = ShaderFactory.compile(
+      _gl,
+      vertexSource: vertexShaderCode,
+      fragmentSource: fragmentShaderCode,
+    );
 
-    final program = _gl.createProgram();
-    _gl
-      ..attachShader(program, vs)
-      ..attachShader(program, fs)
-      ..linkProgram(program);
-
-    final linked = _gl.getProgramParameter(program, WebGL.LINK_STATUS).id == 1;
-    if (!linked) {
-      final log = _gl.getProgramInfoLog(program);
-      _gl
-        ..deleteShader(vs)
-        ..deleteShader(fs)
-        ..deleteProgram(program);
-      throw StateError('Skydome program link failed: $log');
-    }
-
-    _gl
-      ..deleteShader(vs)
-      ..deleteShader(fs);
-
-    _prog = program;
-
-    _uBg = _gl.getUniformLocation(_prog!, 'u_bg');
-    _uViewport = _gl.getUniformLocation(_prog!, 'u_viewport');
-    _uFocal = _gl.getUniformLocation(_prog!, 'u_focal');
-    _uInvViewRot = _gl.getUniformLocation(_prog!, 'u_invViewRot');
-    _uBgRot = _gl.getUniformLocation(_prog!, 'u_bgRot');
-  }
-
-  /// Compiles a shader of [type] from [src] and returns the created shader.
-  ///
-  /// Throws a [StateError] if compilation fails.
-  WebGLShader _compile(int type, String src) {
-    final sh = _gl.createShader(type);
-    _gl
-      ..shaderSource(sh, src)
-      ..compileShader(sh);
-    final ok = _gl.getShaderParameter(sh, WebGL.COMPILE_STATUS);
-    if (!ok) {
-      final log = _gl.getShaderInfoLog(sh);
-      _gl.deleteShader(sh);
-      throw StateError(
-        '${type == WebGL.VERTEX_SHADER ? 'Vertex' : 'Fragment'} compile failed:\n$log',
-      );
-    }
-    return sh;
+    _uBg = _gl.getUniformLocation(_program!, 'u_bg');
+    _uViewport = _gl.getUniformLocation(_program!, 'u_viewport');
+    _uFocal = _gl.getUniformLocation(_program!, 'u_focal');
+    _uInvViewRot = _gl.getUniformLocation(_program!, 'u_invViewRot');
+    _uBgRot = _gl.getUniformLocation(_program!, 'u_bgRot');
   }
 }

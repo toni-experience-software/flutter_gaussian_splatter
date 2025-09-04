@@ -121,18 +121,11 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       await _renderer.initialize();
       _renderer.camera = camera;
 
-      final vertexShaderCode = await flutter_services.rootBundle.loadString(
-        'packages/flutter_gaussian_splatter/shaders/vertex.glsl',
-      );
-      final fragmentShaderCode = await flutter_services.rootBundle.loadString(
-        'packages/flutter_gaussian_splatter/shaders/frag.glsl',
-      );
+
 
       await _renderer.setupTexture(
         width: validSize.width,
         height: validSize.height,
-        vertexShaderCode: vertexShaderCode,
-        fragmentShaderCode: fragmentShaderCode,
         enableProfiling: widget.enableProfiling,
       );
       if(widget.backgroundAssetPath != null) {

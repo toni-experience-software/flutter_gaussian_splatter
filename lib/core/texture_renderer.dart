@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/background/background_skydome.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
@@ -11,6 +12,7 @@ import 'package:flutter_gaussian_splatter/core/depth_sorter.dart' as depth;
 import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
+import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
@@ -125,7 +127,6 @@ class TextureGaussianRenderer {
 
   // Buffers & textures
   Buffer? _vertexBuffer;
-
 
   // Buffer storing index data for triangles.  Batched quads are drawn as
   // independent triangles rather than a strip to avoid winding‑order issues.
@@ -259,14 +260,9 @@ class TextureGaussianRenderer {
   Future<void> setupTexture({
     required double width,
     required double height,
-    required String vertexShaderCode,
-    required String fragmentShaderCode,
     bool enableProfiling = false,
   }) async {
     assert(width > 0 && height > 0, 'Viewport must be non‑zero');
-
-    _vertexShaderSource = vertexShaderCode;
-    _fragmentShaderSource = fragmentShaderCode;
 
     _targetTexture = await _angle.createTexture(
       AngleOptions(
@@ -279,7 +275,7 @@ class TextureGaussianRenderer {
     );
 
     _gl = _targetTexture.getContext();
-    await _compileShaders();
+    await _ensureProgram();
     await _createBuffers();
     _updateProjectionMatrix();
 
@@ -417,7 +413,7 @@ class TextureGaussianRenderer {
 
         // Since the RenderingContext wrapper instance changed,
         // rebuild GL objects
-        _disposeGlResourcesForContext(previousGl);
+        _disposeGlObjects();
         await _recoverFromContextLoss();
 
         // Free the old native texture (fixes leak)
@@ -461,7 +457,7 @@ class TextureGaussianRenderer {
 
     _splatTexScratch = null;
 
-    _disposeGlResourcesForContext(_gl);
+    _disposeGlObjects();
 
     try {
       _angle.dispose([_targetTexture]);
@@ -484,61 +480,47 @@ class TextureGaussianRenderer {
 
   // Internal helpers – shader compilation & buffers
 
-  Future<void> _compileShaders() async {
+  Future<void> _ensureProgram() async {
     if (_program != null && _gl.isProgram(_program!) == true) return;
 
-    _disposeProgram();
+    final vertexShaderCode = await flutter_services.rootBundle.loadString(
+      'packages/flutter_gaussian_splatter/shaders/vertex.glsl',
+    );
+    final fragmentShaderCode = await flutter_services.rootBundle.loadString(
+      'packages/flutter_gaussian_splatter/shaders/frag.glsl',
+    );
 
-    final vs = _compileShader(WebGL.VERTEX_SHADER, _vertexShaderSource);
-    final fs = _compileShader(WebGL.FRAGMENT_SHADER, _fragmentShaderSource);
-
-    final program = _gl.createProgram();
-    _gl
-      ..attachShader(program, vs)
-      ..attachShader(program, fs)
-      ..linkProgram(program);
-
-    final linked = _gl.getProgramParameter(program, WebGL.LINK_STATUS).id == 1;
-    if (!linked) {
-      final log = _gl.getProgramInfoLog(program);
-      _gl
-        ..deleteShader(vs)
-        ..deleteShader(fs)
-        ..deleteProgram(program);
-      throw StateError('Program link failed: $log');
-    }
-
-    // Shaders no longer needed after linking.
-    _gl
-      ..deleteShader(vs)
-      ..deleteShader(fs);
-
-    _program = program;
+    _program = ShaderFactory.compile(
+      _gl,
+      vertexSource: vertexShaderCode,
+      fragmentSource: fragmentShaderCode,
+    );
 
     _cacheUniformLocations();
     _cacheAttributeLocations();
   }
 
-  WebGLShader _compileShader(int type, String source) {
-    final shader = _gl.createShader(type);
-    _gl
-      ..shaderSource(shader, source)
-      ..compileShader(shader);
+  void _cacheUniformLocations() {
+    _uProjection = _uniform('projection');
+    _uView = _uniform('view');
+    _uFocal = _uniform('focal'); // might be null if not in shader.
+    _uViewport = _uniform('viewport');
+    _uTexture = _uniform('u_texture');
+    _uSplatCount = _uniform('splatCount');
+    _uOrderTexture = _uniform('u_orderTexture');
 
-    final compiled = _gl.getShaderParameter(shader, WebGL.COMPILE_STATUS);
-    if (!compiled) {
-      final log = _gl.getShaderInfoLog(shader);
-      _gl.deleteShader(shader);
-      throw StateError(
-        '${type == WebGL.VERTEX_SHADER ? 'Ver' : 'Frag'} shader fail:\n$log',
-      );
-    }
-    return shader;
+    // Maximum splat size uniform used for lightweight culling.
+    _uMaxSplatSize = _uniform('uMaxSplatSize');
+  }
+
+  void _cacheAttributeLocations() {
+    final positionLoc = _gl.getAttribLocation(_program!, 'position').id as int?;
+
+    // Guard against -1 (not found) or null
+    _aPosition = (positionLoc != null && positionLoc >= 0) ? positionLoc : null;
   }
 
   Future<void> _createBuffers() async {
-    _disposeBuffers();
-
     // Build batched vertex buffer.  Each batch contains [GsConst.splatsPerInstance]
     // quads, each requiring 4 vertices.  We store position.xy for the quad corners
     // and position.z as the local offset within the batch (0, 1, 2, ...).
@@ -589,54 +571,68 @@ class TextureGaussianRenderer {
     // No instance index buffer needed - using gl_InstanceID in shader
   }
 
-  void _disposeProgram() {
-    _uniformLocationCache.clear();
+  /// Disposes all GL objects owned by this renderer for the current context.
+  void _disposeGlObjects() {
+    try {
+      _gl
+        ..bindTexture(WebGL.TEXTURE_2D, null)
+        ..bindBuffer(WebGL.ARRAY_BUFFER, null)
+        ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, null)
+        ..useProgram(null);
+    } catch (_) {}
+
+    // Program and uniforms
     if (_program != null) {
-      _gl.deleteProgram(_program!);
+      try {
+        _gl.deleteProgram(_program!);
+      } catch (_) {}
       _program = null;
     }
-  }
+    _uProjection = null;
+    _uView = null;
+    _uFocal = null;
+    _uViewport = null;
+    _uTexture = null;
+    _uSplatCount = null;
+    _uOrderTexture = null;
+    _uMaxSplatSize = null;
+    _aPosition = null;
+    _uniformLocationCache.clear();
 
-  void _disposeBuffers() {
+    // Buffers
     if (_vertexBuffer != null) {
-      _gl.deleteBuffer(_vertexBuffer!);
+      try {
+        _gl.deleteBuffer(_vertexBuffer!);
+      } catch (_) {}
       _vertexBuffer = null;
     }
 
     if (_elementBuffer != null) {
-      _gl.deleteBuffer(_elementBuffer!);
+      try {
+        _gl.deleteBuffer(_elementBuffer!);
+      } catch (_) {}
       _elementBuffer = null;
     }
-    // Delete order texture
+
+    // Textures
     if (_orderTexture != null) {
-      _gl.deleteTexture(_orderTexture!);
+      try {
+        _gl.deleteTexture(_orderTexture!);
+      } catch (_) {}
       _orderTexture = null;
+    }
+
+    if (_texture != null) {
+      try {
+        _gl.deleteTexture(_texture!);
+      } catch (_) {}
+      _texture = null;
     }
   }
 
   // Uniform / attribute cache helpers
 
   final Map<String, UniformLocation?> _uniformLocationCache = {};
-
-  void _cacheUniformLocations() {
-    _uProjection = _uniform('projection');
-    _uView = _uniform('view');
-    _uFocal = _uniform('focal'); // might be null if not in shader.
-    _uViewport = _uniform('viewport');
-    _uTexture = _uniform('u_texture');
-    _uSplatCount = _uniform('splatCount');
-    _uOrderTexture = _uniform('u_orderTexture');
-
-    // Maximum splat size uniform used for lightweight culling.
-    _uMaxSplatSize = _uniform('uMaxSplatSize');
-  }
-
-  void _cacheAttributeLocations() {
-    final positionLoc = _gl.getAttribLocation(_program!, 'position').id as int?;
-
-    // Guard against -1 (not found) or null
-    _aPosition = (positionLoc != null && positionLoc >= 0) ? positionLoc : null;
-  }
 
   UniformLocation? _uniform(String name) => _uniformLocationCache.putIfAbsent(
         name,
@@ -826,8 +822,8 @@ class TextureGaussianRenderer {
             WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST);
 
       // Allocate storage (R32UI - integer format)
-      _gl.texImage2D(WebGL.TEXTURE_2D, 0, WebGL.R32UI, _orderTexW, _orderTexH, 0,
-          WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, null);
+      _gl.texImage2D(WebGL.TEXTURE_2D, 0, WebGL.R32UI, _orderTexW, _orderTexH,
+          0, WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, null);
     } else {
       _gl.bindTexture(WebGL.TEXTURE_2D, _orderTexture);
     }
@@ -845,13 +841,13 @@ class TextureGaussianRenderer {
         WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, u32);
   }
 
-void _uploadIndexBuffer(int splatCount) {
-  final batchSize = GsConst.splatsPerInstance;
-  final groups = (splatCount + batchSize - 1) ~/ batchSize;
+  void _uploadIndexBuffer(int splatCount) {
+    final batchSize = GsConst.splatsPerInstance;
+    final groups = (splatCount + batchSize - 1) ~/ batchSize;
 
-  // No instance buffer needed with gl_InstanceID approach
-  _vertexCount = groups; // draw this many instances, not splats
-}
+    // No instance buffer needed with gl_InstanceID approach
+    _vertexCount = groups; // draw this many instances, not splats
+  }
 
   // Render helpers
 
@@ -884,7 +880,7 @@ void _uploadIndexBuffer(int splatCount) {
     // Keep depth writes off to maintain proper order-independent transparency
     _gl
       ..enable(WebGL.DEPTH_TEST)
-      ..depthMask(false)  // don't write depth; just test against opaque depth
+      ..depthMask(false) // don't write depth; just test against opaque depth
       ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
       ..blendFuncSeparate(
@@ -963,8 +959,13 @@ void _uploadIndexBuffer(int splatCount) {
     // correct base index in the order texture.
     _gl
       ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _elementBuffer)
-      ..drawElementsInstanced(WebGL.TRIANGLES, _indicesPerBatch,
-          WebGL.UNSIGNED_SHORT, 0, _vertexCount,)
+      ..drawElementsInstanced(
+        WebGL.TRIANGLES,
+        _indicesPerBatch,
+        WebGL.UNSIGNED_SHORT,
+        0,
+        _vertexCount,
+      )
       ..flush();
     // Unbind resources after drawing to prevent disposal issues
     if (_aPosition != null) {
@@ -1051,14 +1052,12 @@ void _uploadIndexBuffer(int splatCount) {
 
     // Ensure any leftover GL objects (if any) are gone on the *current* context.
     // Safe no-op when nothing exists.
-    try {
-      _disposeGlResourcesForContext(_gl);
-    } catch (_) {}
+    _disposeGlObjects();
 
     // Rebuild GPU state; if this fails once, leave things null and let next
     //frame retry.
     try {
-      await _compileShaders();
+      await _ensureProgram();
       await _createBuffers();
     } catch (e) {
       debugPrint('Recover failed, will retry next frame: $e');
@@ -1104,62 +1103,6 @@ void _uploadIndexBuffer(int splatCount) {
           await _bg!.setImageFromAsset(_bgAssetPath!);
         } catch (_) {}
       }
-    }
-  }
-
-  void _disposeGlResourcesForContext(RenderingContext gl) {
-    try {
-      gl
-        ..bindTexture(WebGL.TEXTURE_2D, null)
-        ..bindBuffer(WebGL.ARRAY_BUFFER, null)
-        ..useProgram(null);
-    } catch (_) {}
-
-    if (_program != null && gl.isProgram(_program!) == true) {
-      try {
-        gl.deleteProgram(_program!);
-      } catch (_) {}
-    }
-    _program = null;
-    _uProjection = null;
-    _uView = null;
-    _uFocal = null;
-    _uViewport = null;
-    _uTexture = null;
-    _uSplatCount = null;
-    _uOrderTexture = null;
-    _uMaxSplatSize = null;
-    _aPosition = null;
-    _uniformLocationCache.clear();
-
-    if (_vertexBuffer != null) {
-      try {
-        gl.deleteBuffer(_vertexBuffer!);
-      } catch (_) {}
-      _vertexBuffer = null;
-    }
-
-
-
-    if (_elementBuffer != null) {
-      try {
-        gl.deleteBuffer(_elementBuffer!);
-      } catch (_) {}
-      _elementBuffer = null;
-    }
-
-    if (_orderTexture != null) {
-      try {
-        gl.deleteTexture(_orderTexture!);
-      } catch (_) {}
-      _orderTexture = null;
-    }
-
-    if (_texture != null) {
-      try {
-        gl.deleteTexture(_texture!);
-      } catch (_) {}
-      _texture = null;
     }
   }
 }

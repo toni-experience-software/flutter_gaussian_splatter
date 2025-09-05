@@ -26,14 +26,21 @@ class Camera {
     this.znear = 0.2,
     this.zfar = 200.0,
     this.ndcYSign = -1.0, // default for Flutter texture targets
-  })  : assert(
-          width > 0,
+  })  : assert(width > 0, 'Camera width must be greater than 0, got: $width'),
+        assert(
+          height > 0,
+          'Camera height must be greater than 0, got: $height',
         ),
-        assert(height > 0),
-        assert(fx > 0),
-        assert(fy > 0),
-        assert(znear > 0),
-        assert(zfar > znear);
+        assert(fx > 0, 'Focal length fx must be greater than 0, got: $fx'),
+        assert(fy > 0, 'Focal length fy must be greater than 0, got: $fy'),
+        assert(
+          znear > 0,
+          'Near clip plane must be greater than 0, got: $znear',
+        ),
+        assert(
+          zfar > znear,
+          'Far clip plane ($zfar) must be greater than near clip plane ($znear)',
+        );
 
   /// Creates a reasonable default camera from a horizontal FOV and image size.
   ///
@@ -194,11 +201,11 @@ class Camera {
     ];
   }
 
+  /// Focal for shader uniforms;
+  double focalXForShader() => fx;
 
-    /// Focal for shader uniforms; 
-  double focalXForShader() =>fx;
   ///Y already carries the NDC sign.
-  double focalYForShader() =>fx * ndcYSign;
+  double focalYForShader() => fx * ndcYSign;
 
   /// Convenience flags
   bool get yIsFlipped => ndcYSign < 0;
@@ -244,7 +251,6 @@ class Camera {
       height: newHeight.toInt(),
       fx: newFx,
       fy: newFy,
-      
     );
   }
 

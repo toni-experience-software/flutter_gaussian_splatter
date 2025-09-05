@@ -97,7 +97,7 @@ class SkyPass extends RenderPass {
 
   /// Draws the skydome using the provided viewport and camera parameters.
   void execute(RenderingContext gl, Camera camera,
-      {Matrix4? projectionMatrix, Matrix4? viewMatrix}) {
+      {Matrix4? projectionMatrix, Matrix4? viewMatrix,}) {
     if (_program == null || _tex == null) return;
 
     gl

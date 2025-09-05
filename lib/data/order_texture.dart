@@ -26,16 +26,8 @@ class OrderTexture {
   /// Allocated height with headroom to avoid frequent reallocations.
   int _allocHeight = 0;
 
-  /// GPU capabilities for format selection
-  Caps? _caps;
-
   /// Texture format capability - determined on first use
   bool _useR32UI = false;
-
-  /// Get the appropriate formats based on capability
-  int get _internalFormat => (_useR32UI ?? false) ? WebGL.R32UI : WebGL.RGBA32F;
-  int get _format => (_useR32UI ?? false) ? WebGL.RED_INTEGER : WebGL.RGBA;
-  int get _type => (_useR32UI ?? false) ? WebGL.UNSIGNED_INT : WebGL.FLOAT;
 
   /// Uploads a complete array of splat indices to the texture.
   ///
@@ -66,7 +58,7 @@ class OrderTexture {
         u32[i] = indices[i];
       }
       gl.texSubImage2D(WebGL.TEXTURE_2D, 0, 0, 0, width, neededRows,
-          WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, u32);
+          WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, u32,);
     } else {
       // pack into R channel of RGBA32F
       final f32 = Float32Array(totalTexels * 4); // zero-initialized
@@ -74,7 +66,7 @@ class OrderTexture {
         f32[i * 4] = indices[i].toDouble();
       }
       gl.texSubImage2D(WebGL.TEXTURE_2D, 0, 0, 0, width, neededRows, WebGL.RGBA,
-          WebGL.FLOAT, f32);
+          WebGL.FLOAT, f32,);
     }
     height = neededRows;
   }
@@ -104,9 +96,9 @@ class OrderTexture {
     gl
       ..bindTexture(WebGL.TEXTURE_2D, texture)
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE)
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE,)
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE)
+          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE,)
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
       ..texImage2D(
@@ -118,6 +110,6 @@ class OrderTexture {
           0,
           _useR32UI ? WebGL.RED_INTEGER : WebGL.RGBA,
           _useR32UI ? WebGL.UNSIGNED_INT : WebGL.FLOAT,
-          null);
+          null,);
   }
 }

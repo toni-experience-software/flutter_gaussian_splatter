@@ -56,7 +56,7 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
               width: 250,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
+                color: Colors.black.withValues(alpha: .7),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(

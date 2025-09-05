@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -54,6 +53,7 @@ class GaussianSplatterWidget extends StatefulWidget {
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
 }
 
+/// State for [GaussianSplatterWidget] managing rendering and user interaction.
 class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   // Constants
   static const double _kZoomSensitivity = 0.1;
@@ -67,7 +67,10 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   final FileProcessor _fileProcessor = FileProcessor();
 
   // State management
+  /// The Flutter ANGLE texture used for rendering.
   FlutterAngleTexture? texture;
+  
+  /// The texture ID for the Flutter widget system.
   int textureId = _kInvalidTextureId;
 
   // Camera controls
@@ -124,6 +127,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     super.dispose();
   }
 
+  /// Initializes the renderer with the given viewport size and device pixel ratio.
   Future<void> initPlatformState(Size validSize, double dpr) async {
     if (_didInit) return;
 

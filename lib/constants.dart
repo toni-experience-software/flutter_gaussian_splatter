@@ -111,6 +111,6 @@ abstract final class GsConst {
   /// overdraw at close distances and improves performance without
   /// affecting distant views.  Users can adjust this value based on
   /// their target device performance.
-  static const double maxSplatPixelSize = 256.0;
+  static const double maxSplatPixelSize = 256;
 
 }

@@ -3,20 +3,20 @@
 // Draws Gaussian splats using the uploaded SplatSource and OrderTexture.
 // Loads its own program once, caches uniform locations, sets all GL state it needs.
 
-import 'dart:io';
-
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/constants.dart';
-import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/data/order_texture.dart';
 import 'package:flutter_gaussian_splatter/data/splat_source.dart';
+import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 import 'package:flutter_gaussian_splatter/renderer/render_pass.dart';
 import 'package:vector_math/vector_math.dart';
 
+/// Renders Gaussian splats using depth-sorted order and instanced drawing.
 class SplatDrawPass extends RenderPass {
+  /// Creates a splat drawing pass with the given source data and order texture.
   SplatDrawPass({
     required this.source,
     required this.order,
@@ -26,7 +26,10 @@ class SplatDrawPass extends RenderPass {
     this.fsAsset = 'packages/flutter_gaussian_splatter/shaders/frag.glsl',
   });
 
+  /// Source of Gaussian splat data and textures.
   final SplatSource source;
+  
+  /// Texture containing depth-sorted splat indices.
   final OrderTexture order;
 
   /// Saves GPU memory bandwidth by preventing writes to the alpha channel of
@@ -36,8 +39,14 @@ class SplatDrawPass extends RenderPass {
   /// Cost: Can't composite the rendered texture with other elements using its
   ///  alpha channel (needed to blend with Flutter UI)
   bool disableAlphaWrite;
+  
+  /// Maximum allowed splat size in pixels before culling.
   final double maxSplatPixelSize;
+  
+  /// Asset path to the vertex shader.
   final String vsAsset;
+  
+  /// Asset path to the fragment shader.  
   final String fsAsset;
 
   Program? _prog;
@@ -69,7 +78,7 @@ class SplatDrawPass extends RenderPass {
     }
 
     _prog = ShaderFactory.compile(gl,
-        vertexSource: vs, fragmentSource: fs, attribBindings: {'position': 0});
+        vertexSource: vs, fragmentSource: fs, attribBindings: {'position': 0},);
 
     _uProjection = gl.getUniformLocation(_prog!, 'projection');
     _uView = gl.getUniformLocation(_prog!, 'view');
@@ -114,6 +123,7 @@ class SplatDrawPass extends RenderPass {
         _uSplatCount = _uOrderTexture = _uTexture = _uMaxSplatSize = null;
   }
 
+  /// Enables or disables alpha channel writes to the framebuffer.
   void setDisableAlphaWrite(bool v) => disableAlphaWrite = v;
 
   /// Call when splat count changes.
@@ -142,7 +152,7 @@ class SplatDrawPass extends RenderPass {
       // ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
       ..blendFuncSeparate(WebGL.ONE, WebGL.ONE_MINUS_SRC_ALPHA, WebGL.ONE,
-          WebGL.ONE_MINUS_SRC_ALPHA)
+          WebGL.ONE_MINUS_SRC_ALPHA,)
       ..blendEquationSeparate(WebGL.FUNC_ADD, WebGL.FUNC_ADD);
 
     if (disableAlphaWrite) gl.colorMask(true, true, true, false);
@@ -155,8 +165,9 @@ class SplatDrawPass extends RenderPass {
     if (_uView != null) {
       gl.uniformMatrix4fv(_uView!, false, viewMatrix.storage);
     }
-    if (_uFocal != null)
+    if (_uFocal != null) {
       gl.uniform2f(_uFocal!, cam.focalXForShader(), cam.focalYForShader());
+    }
     if (_uViewport != null) {
       gl.uniform2f(_uViewport!, cam.width.toDouble(), cam.height.toDouble());
     }
@@ -187,7 +198,7 @@ class SplatDrawPass extends RenderPass {
     gl
       ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _ebo)
       ..drawElementsInstanced(WebGL.TRIANGLES, _indicesPerBatch,
-          WebGL.UNSIGNED_SHORT, 0, _instanceCount);
+          WebGL.UNSIGNED_SHORT, 0, _instanceCount,);
 
     if (_aPosition != null) gl.disableVertexAttribArray(_aPosition!);
     if (disableAlphaWrite) gl.colorMask(true, true, true, true);
@@ -212,7 +223,7 @@ class SplatDrawPass extends RenderPass {
     gl
       ..bindBuffer(WebGL.ARRAY_BUFFER, _vbo)
       ..bufferData(
-          WebGL.ARRAY_BUFFER, Float32Array.fromList(verts), WebGL.STATIC_DRAW);
+          WebGL.ARRAY_BUFFER, Float32Array.fromList(verts), WebGL.STATIC_DRAW,);
 
     final idx = <int>[];
     for (var q = 0; q < GsConst.splatsPerInstance; q++) {
@@ -225,7 +236,7 @@ class SplatDrawPass extends RenderPass {
     gl
       ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _ebo)
       ..bufferData(WebGL.ELEMENT_ARRAY_BUFFER, Uint16Array.fromList(idx),
-          WebGL.STATIC_DRAW);
+          WebGL.STATIC_DRAW,);
 
     _indicesPerBatch = GsConst.splatsPerInstance * 6;
   }
@@ -235,6 +246,7 @@ class SplatDrawPass extends RenderPass {
     _instanceCount = (source.splatCount + batch - 1) ~/ batch;
   }
 
+  /// Injects a shader define after the #version directive.
   String injectAfterVersion(String src, String defineLine) {
     // Strip UTF-8 BOM if present (some editors add it)
     if (src.isNotEmpty && src.codeUnitAt(0) == 0xFEFF) {

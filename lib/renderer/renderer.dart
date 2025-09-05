@@ -19,6 +19,16 @@ import 'package:vector_math/vector_math.dart';
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
 class Renderer {
+
+  /// Creates a new TextureGaussianRenderer with the specified settings.
+  Renderer({bool disableAlphaWrite = true})
+      : _disableAlphaWrite = disableAlphaWrite {
+    _splatPass = SplatDrawPass(
+      source: _splatSource,
+      order: _orderTexSvc,
+      disableAlphaWrite: _disableAlphaWrite,
+    );
+  }
   // Dependencies & context
   late final FlutterAngle _angle;
   late FlutterAngleTexture _targetTexture;
@@ -63,16 +73,6 @@ class Renderer {
 
   // Optimization settings
   bool _disableAlphaWrite = true;
-
-  /// Creates a new TextureGaussianRenderer with the specified settings.
-  Renderer({bool disableAlphaWrite = true})
-      : _disableAlphaWrite = disableAlphaWrite {
-    _splatPass = SplatDrawPass(
-      source: _splatSource,
-      order: _orderTexSvc,
-      disableAlphaWrite: _disableAlphaWrite,
-    );
-  }
 
   // Public API
 

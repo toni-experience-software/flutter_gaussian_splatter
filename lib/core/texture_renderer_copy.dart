@@ -164,21 +164,8 @@ class TextureGaussianRenderer {
     await _splatPass.init(_gl);
     _updateProjectionMatrix();
 
-    if (enableProfiling) {
-      _perf = PerfProfiler.auto(_gl);
-
-      // Determine profiler type for display
-      if (_perf is DisjointQueryGpuProfiler) {
-        _profilerType = 'GPU';
-      } else if (_perf is GlFinishSamplerProfiler) {
-        _profilerType = 'Sampled';
-      } else {
-        _profilerType = 'CPU';
-      }
-    } else {
-      _perf = null;
-      _profilerType = null;
-    }
+    _profilerType = enableProfiling ? 'CPU' : null; // Set intent
+    _initProfilerIfEnabled();
   }
 
   /// Drives a single frame.  Call from a `Ticker` / `SchedulerBinding`.
@@ -335,11 +322,7 @@ class TextureGaussianRenderer {
       debugPrint('Warning: error disposing target texture: $e');
     }
 
-    try {
-      _perf?.dispose();
-    } catch (e) {
-      debugPrint('Warning: error disposing profiler: $e');
-    }
+    _disposeProfilerQuietly();
   }
 
   // Matrix helpers
@@ -351,6 +334,20 @@ class TextureGaussianRenderer {
   void _updateViewMatrix() {
     if (_camera == null) return;
     _viewMatrix = _camera!.viewMatrix();
+  }
+
+  // Profiler helpers
+  void _initProfilerIfEnabled() {
+    if (_profilerType == null) { _perf = null; return; }
+    _perf = PerfProfiler.auto(_gl);
+    _profilerType = 
+        _perf is DisjointQueryGpuProfiler ? 'GPU'
+      : _perf is GlFinishSamplerProfiler ? 'Sampled'
+      : 'CPU';
+  }
+
+  void _disposeProfilerQuietly() {
+    try { _perf?.dispose(); } catch (_) {}
   }
 
   // Context‑loss recovery
@@ -367,24 +364,10 @@ class TextureGaussianRenderer {
     _updateProjectionMatrix();
 
     //old profiler holds queries & GL pointers from the previous context.
-    try {
-      _perf?.dispose();
-    } catch (_) {}
+    _disposeProfilerQuietly();
 
     // Recreate profiler with same settings as original setup
-    final enableProfiling = _profilerType != null;
-    if (enableProfiling) {
-      _perf = PerfProfiler.auto(_gl);
-      if (_perf is DisjointQueryGpuProfiler) {
-        _profilerType = 'GPU';
-      } else if (_perf is GlFinishSamplerProfiler) {
-        _profilerType = 'Sampled';
-      } else {
-        _profilerType = 'CPU';
-      }
-    } else {
-      _perf = null;
-    }
+    _initProfilerIfEnabled();
 
     // Re-upload content if available
     if (_splatBuffer != null && _splatCount > 0) {

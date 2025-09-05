@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' as services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
+import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 import 'package:flutter_gaussian_splatter/renderer/render_pass.dart';
 import 'package:vector_math/vector_math.dart';
@@ -118,7 +119,7 @@ class SkyPass extends RenderPass {
   }
 
   @override
-  Future<void> init(RenderingContext gl) async {
+  Future<void> init(RenderingContext gl, {Caps? caps}) async {
     // Intentionally don't await; draw() will early-return until ready.
     unawaited(_ensureProgram(gl));
     // Loads the skydome texture from a Flutter asset and prepares mipmaps.

@@ -1,5 +1,6 @@
 import 'package:flutter_angle/desktop/wrapper.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
+import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Minimal contract all render passes implement.
@@ -14,7 +15,7 @@ abstract class RenderPass {
   String get name;
 
   /// Create GL objects, compile shaders, cache uniform locations.
-  Future<void> init(RenderingContext gl);
+  Future<void> init(RenderingContext gl, {Caps? caps});
 
   /// Resize/retarget any size-dependent resources (if any).
   void resize(RenderingContext gl, int width, int height) {}

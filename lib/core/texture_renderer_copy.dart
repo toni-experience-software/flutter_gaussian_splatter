@@ -6,6 +6,7 @@ import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/background/sky_pass.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
+import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
 import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
@@ -19,7 +20,6 @@ import 'package:vector_math/vector_math.dart';
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
 typedef RendererCallback = void Function();
 
-
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
 class TextureGaussianRenderer {
   // Dependencies & context
@@ -32,7 +32,7 @@ class TextureGaussianRenderer {
   late final OrderTexture _orderTexSvc = OrderTexture();
   late final depth.DepthSorterImpl _depthSorter = depth.DepthSorterImpl(
     onSortComplete: (result) {
-      _orderTexSvc.uploadFull(_gl, result.depthIndex.toList());
+      _orderTexSvc.uploadFull(_gl, result.depthIndex.toList(), caps: _caps);
       // Update instancing count in the pass when order changes:
       _splatPass.onSourceChanged();
     },
@@ -49,6 +49,9 @@ class TextureGaussianRenderer {
 
   // Performance profiling
   PerfProfiler? _perf;
+
+  // GPU capabilities
+  Caps? _caps;
 
   // Render state & matrices
   var _viewMatrix = Matrix4.identity();
@@ -106,7 +109,7 @@ class TextureGaussianRenderer {
   /// Enables the background using an asset image.
   Future<void> enableBackgroundFromAsset(String assetPath) async {
     _bg ??= SkyPass(assetPath: assetPath);
-    await _bg!.init(_gl);
+    await _bg!.init(_gl, caps: _caps);
     _bg?.setYawPitchDegrees(90, 0); // pitch only → flips sky/ground
     _bgAssetPath = assetPath;
   }
@@ -127,7 +130,6 @@ class TextureGaussianRenderer {
   /// Only disable if nothing downstream samples the framebuffer's alpha channel.
   void setDisableAlphaWrite({required bool disable}) {
     _splatPass.setDisableAlphaWrite(disable);
-
   }
 
   // Life‑cycle
@@ -161,7 +163,12 @@ class TextureGaussianRenderer {
     );
 
     _gl = _targetTexture.getContext();
-    await _splatPass.init(_gl);
+    
+    // Detect GPU capabilities once
+    _caps = Caps(_gl);
+    debugPrint('R32UI supported: ${_caps!.hasIntegerTex}');
+    
+    await _splatPass.init(_gl, caps: _caps);
     _updateProjectionMatrix();
 
     _profilerType = enableProfiling ? 'CPU' : null; // Set intent
@@ -243,6 +250,7 @@ class TextureGaussianRenderer {
     _orderTexSvc.uploadFull(
       _gl,
       List<int>.generate(_splatCount, (i) => i),
+      caps: _caps,
     );
     if (_camera != null) {
       final vp = _projectionMatrix.multiplied(_viewMatrix);
@@ -338,16 +346,22 @@ class TextureGaussianRenderer {
 
   // Profiler helpers
   void _initProfilerIfEnabled() {
-    if (_profilerType == null) { _perf = null; return; }
+    if (_profilerType == null) {
+      _perf = null;
+      return;
+    }
     _perf = PerfProfiler.auto(_gl);
-    _profilerType = 
-        _perf is DisjointQueryGpuProfiler ? 'GPU'
-      : _perf is GlFinishSamplerProfiler ? 'Sampled'
-      : 'CPU';
+    _profilerType = _perf is DisjointQueryGpuProfiler
+        ? 'GPU'
+        : _perf is GlFinishSamplerProfiler
+            ? 'Sampled'
+            : 'CPU';
   }
 
   void _disposeProfilerQuietly() {
-    try { _perf?.dispose(); } catch (_) {}
+    try {
+      _perf?.dispose();
+    } catch (_) {}
   }
 
   // Context‑loss recovery
@@ -355,7 +369,7 @@ class TextureGaussianRenderer {
     // Rebuild GPU state; if this fails once, leave things null and let next frame retry.
     try {
       _splatPass.dispose(_gl);
-      await _splatPass.init(_gl);
+      await _splatPass.init(_gl, caps: _caps);
     } catch (e) {
       debugPrint('Recover failed, will retry next frame: $e');
       return; // leave things null; next call to frame() can try again
@@ -375,6 +389,7 @@ class TextureGaussianRenderer {
       _orderTexSvc.uploadFull(
         _gl,
         List<int>.generate(_splatCount, (i) => i),
+        caps: _caps,
       );
       final vp = _projectionMatrix.multiplied(_viewMatrix);
       _depthSorter.runSort(vp, _splatBuffer!, _splatCount);
@@ -389,7 +404,7 @@ class TextureGaussianRenderer {
       _bg?.setYawPitchDegrees(0, 0); // pitch only → flips sky/ground
       if (_bgAssetPath != null) {
         try {
-          await _bg!.init(_gl);
+          await _bg!.init(_gl, caps: _caps);
         } catch (_) {}
       }
     }

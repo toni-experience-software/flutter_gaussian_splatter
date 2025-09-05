@@ -7,6 +7,7 @@ import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
+import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/data/order_texture.dart';
 import 'package:flutter_gaussian_splatter/data/splat_source.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
@@ -56,9 +57,15 @@ class SplatDrawPass extends RenderPass {
   String get name => 'splatt_pass';
 
   @override
-  Future<void> init(RenderingContext gl) async {
-    final vs = await flutter_services.rootBundle.loadString(vsAsset);
+  Future<void> init(RenderingContext gl, {Caps? caps}) async {
+    var vs = await flutter_services.rootBundle.loadString(vsAsset);
     final fs = await flutter_services.rootBundle.loadString(fsAsset);
+    
+    // Add shader define based on texture format support
+    if (caps?.hasIntegerTex ?? false) {
+      vs = injectAfterVersion(vs, '#define USE_INTEGER_TEXTURE');
+    }
+    
     _prog = ShaderFactory.compile(gl,
         vertexSource: vs, fragmentSource: fs, attribBindings: {'position': 0});
 
@@ -127,9 +134,10 @@ class SplatDrawPass extends RenderPass {
 
     // Pipeline state (viewport already set by main renderer)
     gl
-      ..enable(WebGL.DEPTH_TEST)
+    // We need to enable if we want to merge with 3D content
+      ..disable(WebGL.DEPTH_TEST) 
       ..depthMask(false)
-      ..depthFunc(WebGL.LEQUAL)
+      // ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
       ..blendFuncSeparate(WebGL.ONE, WebGL.ONE_MINUS_SRC_ALPHA, WebGL.ONE,
           WebGL.ONE_MINUS_SRC_ALPHA)
@@ -223,6 +231,22 @@ class SplatDrawPass extends RenderPass {
     const batch = GsConst.splatsPerInstance;
     _instanceCount = (source.splatCount + batch - 1) ~/ batch;
   }
+
+  String injectAfterVersion(String src, String defineLine) {
+  // Strip UTF-8 BOM if present (some editors add it)
+  if (src.isNotEmpty && src.codeUnitAt(0) == 0xFEFF) {
+    src = src.substring(1);
+  }
+  final lines = src.split('\n');
+  final v = lines.indexWhere((l) => l.trimLeft().startsWith('#version'));
+  if (v >= 0) {
+    lines.insert(v + 1, defineLine);
+    return lines.join('\n');
+  }
+  // If no #version is present (shouldn’t happen), don’t inject before it.
+  return src;
+}
+
 
 
 }

@@ -59,6 +59,7 @@ class RenderStats {
     final gpuInfo =
         hasGpuTiming ? ', gpu: ${gpuFrameTimeMs!.toStringAsFixed(1)}ms' : '';
     final profilerInfo = profilerType != null ? ' [$profilerType]' : '';
-    return 'RenderStats(fps: ${fps.toStringAsFixed(1)}, vtx: $vertexCount$gpuInfo$profilerInfo)';
+    return 'RenderStats(fps: ${fps.toStringAsFixed(1)},'
+    ' vtx: $vertexCount$gpuInfo$profilerInfo)';
   }
 }

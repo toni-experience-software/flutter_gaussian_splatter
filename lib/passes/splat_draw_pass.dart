@@ -1,8 +1,3 @@
-// lib/passes/splat_draw_pass.dart
-//
-// Draws Gaussian splats using the uploaded SplatSource and OrderTexture.
-// Loads its own program once, caches uniform locations, sets all GL state it needs.
-
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
@@ -28,7 +23,7 @@ class SplatDrawPass extends RenderPass {
 
   /// Source of Gaussian splat data and textures.
   final SplatSource source;
-  
+
   /// Texture containing depth-sorted splat indices.
   final OrderTexture order;
 
@@ -39,14 +34,14 @@ class SplatDrawPass extends RenderPass {
   /// Cost: Can't composite the rendered texture with other elements using its
   ///  alpha channel (needed to blend with Flutter UI)
   bool disableAlphaWrite;
-  
+
   /// Maximum allowed splat size in pixels before culling.
   final double maxSplatPixelSize;
-  
+
   /// Asset path to the vertex shader.
   final String vsAsset;
-  
-  /// Asset path to the fragment shader.  
+
+  /// Asset path to the fragment shader.
   final String fsAsset;
 
   Program? _prog;
@@ -77,8 +72,12 @@ class SplatDrawPass extends RenderPass {
       vs = injectAfterVersion(vs, '#define USE_INTEGER_TEXTURE');
     }
 
-    _prog = ShaderFactory.compile(gl,
-        vertexSource: vs, fragmentSource: fs, attribBindings: {'position': 0},);
+    _prog = ShaderFactory.compile(
+      gl,
+      vertexSource: vs,
+      fragmentSource: fs,
+      attribBindings: {'position': 0},
+    );
 
     _uProjection = gl.getUniformLocation(_prog!, 'projection');
     _uView = gl.getUniformLocation(_prog!, 'view');
@@ -123,9 +122,6 @@ class SplatDrawPass extends RenderPass {
         _uSplatCount = _uOrderTexture = _uTexture = _uMaxSplatSize = null;
   }
 
-  /// Enables or disables alpha channel writes to the framebuffer.
-  void setDisableAlphaWrite(bool v) => disableAlphaWrite = v;
-
   /// Call when splat count changes.
   void onSourceChanged() => _recomputeInstanceCount();
 
@@ -151,8 +147,12 @@ class SplatDrawPass extends RenderPass {
       ..depthMask(false)
       // ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
-      ..blendFuncSeparate(WebGL.ONE, WebGL.ONE_MINUS_SRC_ALPHA, WebGL.ONE,
-          WebGL.ONE_MINUS_SRC_ALPHA,)
+      ..blendFuncSeparate(
+        WebGL.ONE,
+        WebGL.ONE_MINUS_SRC_ALPHA,
+        WebGL.ONE,
+        WebGL.ONE_MINUS_SRC_ALPHA,
+      )
       ..blendEquationSeparate(WebGL.FUNC_ADD, WebGL.FUNC_ADD);
 
     if (disableAlphaWrite) gl.colorMask(true, true, true, false);
@@ -197,8 +197,13 @@ class SplatDrawPass extends RenderPass {
 
     gl
       ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _ebo)
-      ..drawElementsInstanced(WebGL.TRIANGLES, _indicesPerBatch,
-          WebGL.UNSIGNED_SHORT, 0, _instanceCount,);
+      ..drawElementsInstanced(
+        WebGL.TRIANGLES,
+        _indicesPerBatch,
+        WebGL.UNSIGNED_SHORT,
+        0,
+        _instanceCount,
+      );
 
     if (_aPosition != null) gl.disableVertexAttribArray(_aPosition!);
     if (disableAlphaWrite) gl.colorMask(true, true, true, true);
@@ -223,7 +228,10 @@ class SplatDrawPass extends RenderPass {
     gl
       ..bindBuffer(WebGL.ARRAY_BUFFER, _vbo)
       ..bufferData(
-          WebGL.ARRAY_BUFFER, Float32Array.fromList(verts), WebGL.STATIC_DRAW,);
+        WebGL.ARRAY_BUFFER,
+        Float32Array.fromList(verts),
+        WebGL.STATIC_DRAW,
+      );
 
     final idx = <int>[];
     for (var q = 0; q < GsConst.splatsPerInstance; q++) {
@@ -235,8 +243,11 @@ class SplatDrawPass extends RenderPass {
     _ebo = gl.createBuffer();
     gl
       ..bindBuffer(WebGL.ELEMENT_ARRAY_BUFFER, _ebo)
-      ..bufferData(WebGL.ELEMENT_ARRAY_BUFFER, Uint16Array.fromList(idx),
-          WebGL.STATIC_DRAW,);
+      ..bufferData(
+        WebGL.ELEMENT_ARRAY_BUFFER,
+        Uint16Array.fromList(idx),
+        WebGL.STATIC_DRAW,
+      );
 
     _indicesPerBatch = GsConst.splatsPerInstance * 6;
   }
@@ -249,16 +260,17 @@ class SplatDrawPass extends RenderPass {
   /// Injects a shader define after the #version directive.
   String injectAfterVersion(String src, String defineLine) {
     // Strip UTF-8 BOM if present (some editors add it)
-    if (src.isNotEmpty && src.codeUnitAt(0) == 0xFEFF) {
-      src = src.substring(1);
+    var source = src;
+    if (source.isNotEmpty && source.codeUnitAt(0) == 0xFEFF) {
+      source = source.substring(1);
     }
-    final lines = src.split('\n');
+    final lines = source.split('\n');
     final v = lines.indexWhere((l) => l.trimLeft().startsWith('#version'));
     if (v >= 0) {
       lines.insert(v + 1, defineLine);
       return lines.join('\n');
     }
-    // If no #version is present (shouldn’t happen), don’t inject before it.
-    return src;
+    // If no #version is present (shouldn't happen), don't inject before it.
+    return source;
   }
 }

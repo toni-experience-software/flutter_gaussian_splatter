@@ -19,14 +19,12 @@ import 'package:vector_math/vector_math.dart';
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
 class Renderer {
-
   /// Creates a new TextureGaussianRenderer with the specified settings.
-  Renderer({bool disableAlphaWrite = true})
-      : _disableAlphaWrite = disableAlphaWrite {
+  Renderer({this.disableAlphaWrite = false}) {
     _splatPass = SplatDrawPass(
       source: _splatSource,
       order: _orderTexSvc,
-      disableAlphaWrite: _disableAlphaWrite,
+      disableAlphaWrite: disableAlphaWrite,
     );
   }
   // Dependencies & context
@@ -71,8 +69,8 @@ class Renderer {
   bool _isResizing = false;
   PerfStats? _lastPerfStats;
 
-  // Optimization settings
-  bool _disableAlphaWrite = true;
+  /// Optimization settings
+  bool disableAlphaWrite;
 
   // Public API
 
@@ -129,12 +127,6 @@ class Renderer {
     _bg?.setYawPitchDegrees(yawDegrees, pitchDegrees);
   }
 
-  /// Enables/disables alpha channel writes for bandwidth optimization.
-  /// Only disable if nothing downstream samples the framebuffer's alpha channel.
-  void setDisableAlphaWrite({required bool disable}) {
-    _splatPass.setDisableAlphaWrite(disable);
-  }
-
   // Life‑cycle
 
   /// Initializes ANGLE and the depth‑sorter. Must be called before any other
@@ -159,7 +151,7 @@ class Renderer {
       AngleOptions(
         width: width.toInt(),
         height: height.toInt(),
-        dpr: 1, // TODO(jesper): support dpr?
+        dpr: 1,
         alpha: true,
         useSurfaceProducer: true,
       ),
@@ -369,7 +361,8 @@ class Renderer {
 
   // Context‑loss recovery
   Future<void> _recoverFromContextLoss() async {
-    // Rebuild GPU state; if this fails once, leave things null and let next frame retry.
+    // Rebuild GPU state; if this fails once, 
+    // leave things null and let next frame retry.
     try {
       _splatPass.dispose(_gl);
       await _splatPass.init(_gl, caps: _caps);

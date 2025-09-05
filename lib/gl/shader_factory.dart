@@ -2,29 +2,7 @@ import 'package:flutter_angle/desktop/wrapper.dart';
 import 'package:flutter_angle/shared/classes.dart';
 import 'package:flutter_angle/shared/webgl.dart';
 
-/// Builds GLSL programs with optional preprocessor defines and attribute bindings.
-///
-/// Usage:
-/// ```dart
-/// final bgProg = ShaderFactory.compile(
-///   gl,
-///   vertexSource: bgVs,
-///   fragmentSource: bgFs,
-/// );
-///
-/// final splatProg = ShaderFactory.compile(
-///   gl,
-///   vertexSource: splatVs,
-///   fragmentSource: splatFs,
-///   defines: {'USE_WORKBUFFER': '0'},     // optional
-///   attribBindings: {'position': 0},      // optional
-/// );
-///
-/// gl
-///   ..useProgram(bgProg)
-///   ..disable(WebGL.BLEND)
-///   ..disable(WebGL.DEPTH_TEST);
-/// ```
+/// Builds GLSL programs with optional preprocessor defines and attribute 
 abstract class ShaderFactory {
   /// Compiles and links a program. Throws on compile/link errors.
   static Program compile(

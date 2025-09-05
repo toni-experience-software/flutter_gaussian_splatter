@@ -39,7 +39,8 @@ class Camera {
         ),
         assert(
           zfar > znear,
-          'Far clip plane ($zfar) must be greater than near clip plane ($znear)',
+          'Far clip plane ($zfar) must be '
+          'greater than near clip plane ($znear)',
         );
 
   /// Creates a reasonable default camera from a horizontal FOV and image size.

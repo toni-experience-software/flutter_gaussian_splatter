@@ -21,7 +21,8 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// The [assetPath] must point to a valid .ply file or processed splat data.
   /// Set [showStats] to true to display rendering statistics overlay.
   /// Set [enableProfiling] to true to enable detailed performance profiling
-  /// Set [disableAlphaWrite] to true to optimize bandwidth by disabling alpha writes
+  /// Set [disableAlphaWrite] to true to optimize bandwidth by disabling alpha
+  /// writes
   const GaussianSplatterWidget({
     required this.assetPath,
     this.backgroundAssetPath,
@@ -43,7 +44,8 @@ class GaussianSplatterWidget extends StatefulWidget {
   final bool enableProfiling;
 
   /// Whether to disable alpha channel writes for bandwidth optimization.
-  /// Only disable if nothing downstream samples the framebuffer's alpha channel.
+  /// Only disable if nothing downstream samples the framebuffer's alpha
+  /// channel.
   final bool disableAlphaWrite;
 
   /// Path to the asset containing the background image.
@@ -69,7 +71,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   // State management
   /// The Flutter ANGLE texture used for rendering.
   FlutterAngleTexture? texture;
-  
+
   /// The texture ID for the Flutter widget system.
   int textureId = _kInvalidTextureId;
 
@@ -127,7 +129,8 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     super.dispose();
   }
 
-  /// Initializes the renderer with the given viewport size and device pixel ratio.
+  /// Initializes the renderer with the given viewport size and device pixel
+  /// ratio.
   Future<void> initPlatformState(Size validSize, double dpr) async {
     if (_didInit) return;
 
@@ -143,7 +146,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     final camera = Camera.createDefault(
       width: validSize.width,
       height: validSize.height,
-      ndcYSign: Platform.isAndroid ? 1:-1,
+      ndcYSign: Platform.isAndroid ? 1 : -1,
     );
 
     // Initialize spherical coordinates from initial camera position
@@ -223,18 +226,21 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
         final perfInfo = StringBuffer()
           ..writeln('Performance [${stats.profilerType ?? 'Unknown'}]:')
           ..writeln(
-            '  CPU: ${stats.fps.toStringAsFixed(1)} FPS (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)',
+            '  CPU: ${stats.fps.toStringAsFixed(1)} FPS'
+            ' (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)',
           );
 
         if (stats.hasGpuTiming && stats.gpuFps != null) {
           perfInfo.writeln(
-            '  GPU: ${stats.gpuFps!.toStringAsFixed(1)} FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)',
+            '  GPU: ${stats.gpuFps!.toStringAsFixed(1)} '
+            ' FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)',
           );
         } else {
           perfInfo.writeln('  GPU: Timing unavailable');
         }
 
-        _statsText = '''$perfInfo
+        _statsText = '''
+$perfInfo
 Rendering:
   Gaussian Splats: ${stats.vertexCount}
   Viewport: ${camera.width} × ${camera.height}px

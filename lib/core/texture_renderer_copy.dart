@@ -1,10 +1,9 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/background/background_skydome.dart';
+import 'package:flutter_gaussian_splatter/core/background/sky_pass.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
@@ -20,69 +19,8 @@ import 'package:vector_math/vector_math.dart';
 /// Signature for callbacks delivered by [TextureGaussianRenderer].
 typedef RendererCallback = void Function();
 
-/// Sort completion callback signature.
-typedef SortCompleteCallback = void Function(List<int> order, int total);
-
-/// Wrapper around DepthSorterImpl that provides the expected callback interface.
-///
-/// This class adapts the DepthSorterImpl callback interface to match 
-/// what the
-/// TextureGaussianRenderer expects, converting SortResult to separate order
-/// list and count parameters.
-class SortScheduler {
-  /// Creates a SortScheduler with the given completion callback.
-  SortScheduler({required this.onSorted});
-
-  /// Callback invoked when depth sorting completes.
-  final SortCompleteCallback onSorted;
-  
-  late final depth.DepthSorterImpl _sorter = depth.DepthSorterImpl(
-    onSortComplete: (result) {
-      onSorted(result.depthIndex.toList(), result.vertexCount);
-    },
-  );
-
-  /// Initializes the underlying depth sorter.
-  Future<void> initialize() => _sorter.initialize();
-  
-  /// Disposes the underlying depth sorter.
-  void dispose() => _sorter.dispose();
-
-  /// Requests immediate depth sorting without throttling.
-  void requestImmediate(
-    Matrix4 viewProjection, 
-    Uint8List buffer, 
-    int splatCount,
-  ) {
-    _sorter.runSort(viewProjection, buffer, splatCount);
-  }
-
-  /// Requests depth sorting with frame-based throttling.
-  void maybeRequestSort(
-    Matrix4 viewProjection, 
-    Uint8List buffer, 
-    int splatCount,
-  ) {
-    _sorter.throttledSort(viewProjection, buffer, splatCount);
-  }
-}
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
-///
-/// This class encapsulates the full WebGL / ANGLE pipeline required by Gaussian
-/// Splatting.  Life‑cycle:
-/// ```dart
-/// final renderer = TextureGaussianRenderer();
-/// await renderer.initialize();
-/// await renderer.setupTexture(width: 800, height: 600, vertexShaderCode: vs,
-/// fragmentShaderCode: fs);
-/// renderer.createAndSetDefaultCamera();
-/// renderer.setSplatData(myBinarySplatBuffer);
-/// renderer.startRenderLoop();
-/// // drive [frame] from a SchedulerBinding / Ticker.
-/// ```
-///
-/// All public APIs are `@mustCallSuper` lifecycle‑aware.
 class TextureGaussianRenderer {
   // Dependencies & context
   late final FlutterAngle _angle;
@@ -92,13 +30,11 @@ class TextureGaussianRenderer {
   // New service-based architecture
   late final SplatSource _splatSource = SplatSource();
   late final OrderTexture _orderTexSvc = OrderTexture();
-  late final SortScheduler _sort = SortScheduler(
-    onSorted: (order, total) {
-      _orderTexSvc.uploadFull(_gl, order);
+  late final depth.DepthSorterImpl _depthSorter = depth.DepthSorterImpl(
+    onSortComplete: (result) {
+      _orderTexSvc.uploadFull(_gl, result.depthIndex.toList());
       // Update instancing count in the pass when order changes:
       _splatPass.onSourceChanged();
-      _vertexCount = (total + GsConst.splatsPerInstance - 1) ~/ 
-          GsConst.splatsPerInstance;
     },
   );
   late final SplatDrawPass _splatPass = SplatDrawPass(
@@ -107,10 +43,8 @@ class TextureGaussianRenderer {
     disableAlphaWrite: _disableAlphaWrite,
   );
 
-
-
   //Background
-  SkydomeBackground? _bg;
+  SkyPass? _bg;
   String? _bgAssetPath; // for reload after context loss
 
   // Performance profiling
@@ -122,19 +56,14 @@ class TextureGaussianRenderer {
   GaussianCamera? _camera;
 
   // Splat data & vertices
-  int _vertexCount = 0;
   Uint8List? _splatBuffer;
   int _splatCount = 0;
 
-  // Timing & FPS
-  bool _isRendering = false;
+  // Render state
   bool _inFrame = false;
-  DateTime _lastFrameTime = DateTime.timestamp();
-  double _fps = 0;
-  double? _cpuFrameTimeMs;
-  double? _gpuFrameTimeMs;
   String? _profilerType;
   bool _isResizing = false;
+  PerfStats? _lastPerfStats;
 
   // Optimization settings
   bool _disableAlphaWrite = true;
@@ -143,11 +72,11 @@ class TextureGaussianRenderer {
 
   /// Latest frame statistics with detailed performance profiling.
   RenderStats get renderStats => RenderStats(
-        fps: _fps,
-        vertexCount: _vertexCount,
-        lastFrameTime: _lastFrameTime,
-        cpuFrameTimeMs: _cpuFrameTimeMs,
-        gpuFrameTimeMs: _gpuFrameTimeMs,
+        fps: _lastPerfStats?.fps ?? 0.0,
+        vertexCount: _splatSource.splatCount,
+        lastFrameTime: DateTime.timestamp(),
+        cpuFrameTimeMs: _lastPerfStats?.cpuMsAvg,
+        gpuFrameTimeMs: _lastPerfStats?.gpuMsAvg,
         profilerType: _profilerType,
       );
 
@@ -159,7 +88,7 @@ class TextureGaussianRenderer {
   Size? get currentSize => _camera == null
       ? null
       : Size(
-          _camera!.width.toDouble(), 
+          _camera!.width.toDouble(),
           _camera!.height.toDouble(),
         );
 
@@ -176,7 +105,7 @@ class TextureGaussianRenderer {
 
   /// Enables the background using an asset image.
   Future<void> enableBackgroundFromAsset(String assetPath) async {
-    _bg ??= SkydomeBackground(assetPath: assetPath);
+    _bg ??= SkyPass(assetPath: assetPath);
     await _bg!.init(_gl);
     _bg?.setYawPitchDegrees(90, 0); // pitch only → flips sky/ground
     _bgAssetPath = assetPath;
@@ -197,10 +126,8 @@ class TextureGaussianRenderer {
   /// Enables/disables alpha channel writes for bandwidth optimization.
   /// Only disable if nothing downstream samples the framebuffer's alpha channel.
   void setDisableAlphaWrite({required bool disable}) {
-    _disableAlphaWrite = disable;
-    // Note: This requires recreating the SplatDrawPass since 
-    // disableAlphaWrite is immutable. For dynamic updates, we'd need 
-    // to make this mutable in SplatDrawPass
+    _splatPass.setDisableAlphaWrite(disable);
+
   }
 
   // Life‑cycle
@@ -211,7 +138,7 @@ class TextureGaussianRenderer {
     _angle = FlutterAngle();
     await _angle.init(debug);
 
-    await _sort.initialize(); // replaces _depthSorter.initialize()
+    await _depthSorter.initialize();
   }
 
   /// Creates a texture and compiles the shaders.  Safe to call multiple times –
@@ -254,17 +181,11 @@ class TextureGaussianRenderer {
     }
   }
 
-  /// Starts the internal render loop. Idempotent.
-  void startRenderLoop() => _isRendering = true;
-
-  /// Stops the internal render loop. Idempotent.
-  void stopRenderLoop() => _isRendering = false;
-
   /// Drives a single frame.  Call from a `Ticker` / `SchedulerBinding`.
   Future<void> frame() async {
     // Bail during resize/context swap
     // Reentrancy guard
-    if (!_isRendering || _isResizing || _inFrame) return;
+    if (_isResizing || _inFrame) return;
 
     // Guard readiness up front
     if (_camera == null) return;
@@ -273,14 +194,14 @@ class TextureGaussianRenderer {
     try {
       _perf?.beginFrame();
 
-      // Sorting trigger + drawing
+      // Always sort immediately when rendering
       if (_splatBuffer != null && _splatCount > 0) {
         final vp = _projectionMatrix.multiplied(_viewMatrix);
-        _sort.maybeRequestSort(vp, _splatBuffer!, _splatCount);
+        _depthSorter.runSort(vp, _splatBuffer!, _splatCount);
       }
 
       _perf?.markGpuBegin(_gl);
-      
+
       _gl
         ..viewport(0, 0, _camera!.width, _camera!.height)
         ..clearColor(0, 0, 0, 0)
@@ -294,20 +215,18 @@ class TextureGaussianRenderer {
 
       // Only draw splats if we have data
       if (_splatBuffer != null && _splatCount > 0) {
-        _splatPass.execute(_gl, _camera!, 
-          projectionMatrix: _projectionMatrix, 
-          viewMatrix: _viewMatrix);
+        _splatPass.execute(
+          _gl,
+          _camera!,
+          projectionMatrix: _projectionMatrix,
+          viewMatrix: _viewMatrix,
+        );
       }
-      
+      _gl.flush();
+
       _perf?.markGpuEnd(_gl);
 
-      if (_perf != null) {
-        final perfStats = _perf!.endFrame(_gl);
-        _fps = perfStats.fps;
-        _cpuFrameTimeMs = perfStats.cpuMsAvg;
-        _gpuFrameTimeMs = perfStats.gpuMsAvg;
-      }
-      _lastFrameTime = DateTime.timestamp();
+      _lastPerfStats = _perf?.endFrame(_gl);
     } catch (_) {
       // Recovery path on GL/Program invalidation
       await _recoverFromContextLoss();
@@ -329,20 +248,18 @@ class TextureGaussianRenderer {
     _splatBuffer = data;
     _splatSource.upload(_gl, data);
     _splatCount = _splatSource.splatCount;
-    _vertexCount = (_splatCount + GsConst.splatsPerInstance - 1) ~/ 
-        GsConst.splatsPerInstance;
 
     // Update the draw pass instance count
     _splatPass.onSourceChanged();
 
     // Initial unsorted order (sequential), then request an immediate sort.
     _orderTexSvc.uploadFull(
-      _gl, 
+      _gl,
       List<int>.generate(_splatCount, (i) => i),
     );
     if (_camera != null) {
       final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _sort.requestImmediate(vp, data, _splatCount);
+      _depthSorter.runSort(vp, data, _splatCount);
     }
   }
 
@@ -406,12 +323,11 @@ class TextureGaussianRenderer {
 
   /// Disposes *all* resources. The instance must not be used afterwards.
   void dispose() {
-    stopRenderLoop();
-
+    _bg?.dispose(_gl);
     _splatPass.dispose(_gl);
     _splatSource.dispose(_gl);
     _orderTexSvc.dispose(_gl);
-    _sort.dispose();
+    _depthSorter.dispose();
 
     try {
       _angle.dispose([_targetTexture]);
@@ -426,69 +342,15 @@ class TextureGaussianRenderer {
     }
   }
 
-
-
   // Matrix helpers
-
   void _updateProjectionMatrix() {
     if (_camera == null) return;
-    _projectionMatrix = _makeProjectionMatrix(
-      _camera!.fx,
-      _camera!.fy,
-      _camera!.width.toDouble(),
-      _camera!.height.toDouble(),
-    );
+    _projectionMatrix = _camera!.projectionMatrix();
   }
 
   void _updateViewMatrix() {
     if (_camera == null) return;
-    _viewMatrix = _makeViewMatrix(_camera!);
-  }
-
-  Matrix4 _makeProjectionMatrix(
-    double fx,
-    double fy,
-    double width,
-    double height,
-  ) {
-    const znear = 0.2;
-    const zfar = 200.0;
-
-    final fovX = (2 * fx) / width;
-    final fovY = (2 * fy) / height;
-    const farNearRatio = zfar / (zfar - znear);
-    const farNearProduct = -(zfar * znear) / (zfar - znear);
-
-    return Matrix4(
-      fovX, 0, 0, 0, // column 0
-      0, fovY, 0, 0, // column 1
-      0, 0, farNearRatio, 1, // column 2
-      0, 0, farNearProduct, 0, // column 3
-    );
-  }
-
-  Matrix4 _makeViewMatrix(GaussianCamera cam) {
-    final R = cam.rotation;
-    final t = cam.position;
-
-    return Matrix4(
-      R.row0.x,
-      R.row0.y,
-      R.row0.z,
-      0,
-      R.row1.x,
-      R.row1.y,
-      R.row1.z,
-      0,
-      R.row2.x,
-      R.row2.y,
-      R.row2.z,
-      0,
-      -t.x * R.row0.x - t.y * R.row1.x - t.z * R.row2.x,
-      -t.x * R.row0.y - t.y * R.row1.y - t.z * R.row2.y,
-      -t.x * R.row0.z - t.y * R.row1.z - t.z * R.row2.z,
-      1,
-    );
+    _viewMatrix = _camera!.viewMatrix();
   }
 
   // Context‑loss recovery
@@ -528,11 +390,11 @@ class TextureGaussianRenderer {
     if (_splatBuffer != null && _splatCount > 0) {
       _splatSource.upload(_gl, _splatBuffer!);
       _orderTexSvc.uploadFull(
-        _gl, 
+        _gl,
         List<int>.generate(_splatCount, (i) => i),
       );
       final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _sort.requestImmediate(vp, _splatBuffer!, _splatCount);
+      _depthSorter.runSort(vp, _splatBuffer!, _splatCount);
     }
 
     // Recreate background with new context if previously enabled
@@ -540,7 +402,7 @@ class TextureGaussianRenderer {
       try {
         _bg!.dispose(_gl);
       } catch (_) {}
-      _bg = SkydomeBackground(assetPath: _bgAssetPath!);
+      _bg = SkyPass(assetPath: _bgAssetPath!);
       _bg?.setYawPitchDegrees(0, 0); // pitch only → flips sky/ground
       if (_bgAssetPath != null) {
         try {

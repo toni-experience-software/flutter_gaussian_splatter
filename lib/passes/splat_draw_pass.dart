@@ -10,9 +10,10 @@ import 'package:flutter_gaussian_splatter/core/constants.dart';
 import 'package:flutter_gaussian_splatter/data/order_texture.dart';
 import 'package:flutter_gaussian_splatter/data/splat_source.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
+import 'package:flutter_gaussian_splatter/renderer/render_pass.dart';
 import 'package:vector_math/vector_math.dart';
 
-class SplatDrawPass /* implements RenderPass */ {
+class SplatDrawPass extends RenderPass {
   SplatDrawPass({
     required this.source,
     required this.order,
@@ -24,25 +25,37 @@ class SplatDrawPass /* implements RenderPass */ {
 
   final SplatSource source;
   final OrderTexture order;
-  final bool disableAlphaWrite;
+
+  /// Saves GPU memory bandwidth by preventing writes to the alpha channel of
+  /// the framebuffer.
+  /// Benefit: Reduces GPU memory bandwidth by ~25%
+  /// (writing 3 channels instead of 4)
+  /// Cost: Can't composite the rendered texture with other elements using its
+  ///  alpha channel (needed to blend with Flutter UI)
+  bool disableAlphaWrite;
   final double maxSplatPixelSize;
   final String vsAsset;
   final String fsAsset;
 
   Program? _prog;
-  UniformLocation? _uProjection,
-      _uView,
-      _uFocal,
-      _uViewport,
-      _uSplatCount,
-      _uOrderTexture,
-      _uTexture,
-      _uMaxSplatSize;
+  UniformLocation? _uProjection;
+  UniformLocation? _uView;
+  UniformLocation? _uFocal;
+  UniformLocation? _uViewport;
+  UniformLocation? _uSplatCount;
+  UniformLocation? _uOrderTexture;
+  UniformLocation? _uTexture;
+  UniformLocation? _uMaxSplatSize;
   int? _aPosition;
-  Buffer? _vbo, _ebo;
+  Buffer? _vbo;
+  Buffer? _ebo;
   int _indicesPerBatch = 0;
   int _instanceCount = 0;
 
+    @override
+  String get name => 'splatt_pass';
+
+  @override
   Future<void> init(RenderingContext gl) async {
     final vs = await flutter_services.rootBundle.loadString(vsAsset);
     final fs = await flutter_services.rootBundle.loadString(fsAsset);
@@ -64,20 +77,22 @@ class SplatDrawPass /* implements RenderPass */ {
 
     // Bind samplers to fixed texture units once (no per-frame cost).
     gl.useProgram(_prog);
-    if (_uTexture != null) gl.uniform1i(_uTexture!, 0); // splat atlas -> TEXTURE0
-    if (_uOrderTexture != null) gl.uniform1i(_uOrderTexture!, 1); // order map -> TEXTURE1
+    if (_uTexture != null) {
+      gl.uniform1i(_uTexture!, 0); // splat atlas -> TEXTURE0
+    }
+    if (_uOrderTexture != null) {
+      gl.uniform1i(_uOrderTexture!, 1); // order map -> TEXTURE1
+    }
   }
 
-    void _cacheAttributeLocations(RenderingContext gl) {
+  void _cacheAttributeLocations(RenderingContext gl) {
     final positionLoc = gl.getAttribLocation(_prog!, 'position').id as int?;
 
     // Guard against -1 (not found) or null
     _aPosition = (positionLoc != null && positionLoc >= 0) ? positionLoc : null;
   }
-  
 
-  
-
+  @override
   void dispose(RenderingContext gl) {
     if (_prog != null) gl.deleteProgram(_prog!);
     if (_vbo != null) gl.deleteBuffer(_vbo!);
@@ -86,24 +101,33 @@ class SplatDrawPass /* implements RenderPass */ {
     _vbo = null;
     _ebo = null;
     _aPosition = null;
-    _uProjection = _uView = _uFocal =
-        _uViewport = _uSplatCount = _uOrderTexture = _uTexture = _uMaxSplatSize = null;
+    _uProjection = _uView = _uFocal = _uViewport =
+        _uSplatCount = _uOrderTexture = _uTexture = _uMaxSplatSize = null;
   }
+
+  void setDisableAlphaWrite(bool v) => disableAlphaWrite = v;
 
   /// Call when splat count changes.
   void onSourceChanged() => _recomputeInstanceCount();
 
-  void execute(RenderingContext gl, GaussianCamera cam, {Matrix4? projectionMatrix, Matrix4? viewMatrix}) {
-    if (_prog == null || source.texture == null || source.splatCount == 0) {
+  @override
+  void execute(
+    RenderingContext gl,
+    GaussianCamera cam, {
+    Matrix4? projectionMatrix,
+    Matrix4? viewMatrix,
+  }) {
+    if (_prog == null ||
+        source.texture == null ||
+        source.splatCount == 0 ||
+        projectionMatrix == null ||
+        viewMatrix == null) {
       return;
     }
 
-    final proj = projectionMatrix ?? _makeProjection(
-        cam.fx, cam.fy, cam.width.toDouble(), cam.height.toDouble());
-    final view = viewMatrix ?? _makeView(cam);
-
     // Pipeline state (viewport already set by main renderer)
-    gl..enable(WebGL.DEPTH_TEST)
+    gl
+      ..enable(WebGL.DEPTH_TEST)
       ..depthMask(false)
       ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
@@ -115,15 +139,20 @@ class SplatDrawPass /* implements RenderPass */ {
 
     // Program + uniforms
     gl.useProgram(_prog);
-    if (_uProjection != null)
-      gl.uniformMatrix4fv(_uProjection!, false, proj.storage);
-    if (_uView != null) gl.uniformMatrix4fv(_uView!, false, view.storage);
+    if (_uProjection != null) {
+      gl.uniformMatrix4fv(_uProjection!, false, projectionMatrix!.storage);
+    }
+    if (_uView != null) {
+      gl.uniformMatrix4fv(_uView!, false, viewMatrix!.storage);
+    }
     if (_uFocal != null) gl.uniform2f(_uFocal!, cam.fx, cam.fy);
-    if (_uViewport != null)
+    if (_uViewport != null) {
       gl.uniform2f(_uViewport!, cam.width.toDouble(), cam.height.toDouble());
+    }
     if (_uSplatCount != null) gl.uniform1i(_uSplatCount!, source.splatCount);
-    if (_uMaxSplatSize != null)
+    if (_uMaxSplatSize != null) {
       gl.uniform1f(_uMaxSplatSize!, maxSplatPixelSize);
+    }
 
     // Bind textures to the units we fixed above.
     gl
@@ -195,51 +224,5 @@ class SplatDrawPass /* implements RenderPass */ {
     _instanceCount = (source.splatCount + batch - 1) ~/ batch;
   }
 
-  static Matrix4 _makeProjection(double fx, double fy, double w, double h) {
-    const zn = 0.2, zf = 200.0;
-    final fovX = (2 * fx) / w;
-    final fovY = (2 * fy) / h;
-    const a = zf / (zf - zn);
-    const b = -(zf * zn) / (zf - zn);
-    return Matrix4(
-      fovX,
-      0,
-      0,
-      0,
-      0,
-      fovY,
-      0,
-      0,
-      0,
-      0,
-      a,
-      1,
-      0,
-      0,
-      b,
-      0,
-    );
-  }
 
-  static Matrix4 _makeView(GaussianCamera cam) {
-    final R = cam.rotation, t = cam.position;
-    return Matrix4(
-      R.row0.x,
-      R.row0.y,
-      R.row0.z,
-      0,
-      R.row1.x,
-      R.row1.y,
-      R.row1.z,
-      0,
-      R.row2.x,
-      R.row2.y,
-      R.row2.z,
-      0,
-      -t.x * R.row0.x - t.y * R.row1.x - t.z * R.row2.x,
-      -t.x * R.row0.y - t.y * R.row1.y - t.z * R.row2.y,
-      -t.x * R.row0.z - t.y * R.row1.z - t.z * R.row2.z,
-      1,
-    );
-  }
 }

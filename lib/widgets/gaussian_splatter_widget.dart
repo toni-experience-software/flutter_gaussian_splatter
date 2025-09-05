@@ -5,7 +5,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
@@ -49,8 +48,7 @@ class GaussianSplatterWidget extends StatefulWidget {
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
 }
 
-class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
-    with SingleTickerProviderStateMixin {
+class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   // Constants
   static const double _kZoomSensitivity = 0.1;
   static const double _kPanSensitivity = 5;
@@ -65,8 +63,6 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   // State management
   FlutterAngleTexture? texture;
   int textureId = _kInvalidTextureId;
-  bool isUpdating = false;
-  late Ticker ticker;
 
   // Camera controls
   bool _isInteracting = false;
@@ -88,7 +84,6 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   @override
   void dispose() {
     if (_didInit) {
-      ticker.dispose();
       _renderer.dispose();
     }
     super.dispose();
@@ -119,13 +114,14 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
 
     try {
       await _renderer.initialize();
-      _renderer.camera = camera;
 
       await _renderer.setupTexture(
         width: validSize.width,
         height: validSize.height,
         enableProfiling: widget.enableProfiling,
       );
+      
+      _renderer.camera = camera;
       if (widget.backgroundAssetPath != null) {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
       }
@@ -146,14 +142,14 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
 
       debugPrint('Successfully created texture with ID: $textureId');
 
+
       await _loadSplatDataFromAsset(widget.assetPath);
-      _renderer.startRenderLoop();
 
       if (!mounted) return;
       setState(() {});
 
-      ticker = createTicker(_updateTexture);
-      unawaited(ticker.start());
+      // Initial render after setup
+      await _renderFrame();
     } catch (e) {
       debugPrint('Failed to initialize renderer: $e');
       rethrow;
@@ -169,26 +165,20 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
         : bytes;
 
     _renderer.setSplatData(processedData);
+    await _renderFrame();
   }
 
-  Future<void> _updateTexture(Duration elapsed) async {
-    if (textureId < 0 || isUpdating) return;
+  Future<void> _renderFrame() async {
+    if (textureId < 0) return;
 
-    isUpdating = true;
-    try {
-      texture!.activate();
-      await _renderer.frame();
+    texture!.activate();
+    await _renderer.frame();
 
-      if (widget.showStats) {
-        _updateStats();
-      }
-
-      await texture!.signalNewFrameAvailable();
-    } catch (e) {
-      debugPrint("Error updating texture: $e");
-    } finally {
-      isUpdating = false;
+    if (widget.showStats) {
+      _updateStats();
     }
+
+    await texture!.signalNewFrameAvailable();
   }
 
   void _updateStats() {
@@ -282,6 +272,8 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
       position: pos,
       rotation: rot,
     );
+    
+    _renderFrame();
   }
 
   void _orbitCamera(double deltaX, double deltaY) {
@@ -312,6 +304,8 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
       // Update texture reference after successful resize
       texture = _renderer.targetTexture;
       textureId = texture!.textureId;
+      
+      await _renderFrame();
     } catch (e) {
       log('Resize failed: $e');
     }

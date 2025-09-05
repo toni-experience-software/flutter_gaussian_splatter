@@ -7,11 +7,12 @@ import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 import 'package:flutter_gaussian_splatter/renderer/render_pass.dart';
+import 'package:vector_math/vector_math.dart';
 
 /// Minimal, optional equirectangular skydome background.
-class SkydomeBackground extends RenderPass {
-  /// Creates a [SkydomeBackground] bound to the provided WebGL context.
-  SkydomeBackground({required this.assetPath});
+class SkyPass extends RenderPass {
+  /// Creates a [SkyPass] bound to the provided WebGL context.
+  SkyPass({required this.assetPath});
 
   @override
   String get name => 'Skydome';
@@ -92,8 +93,10 @@ class SkydomeBackground extends RenderPass {
   }
 
   @override
+
   /// Draws the skydome using the provided viewport and camera parameters.
-  void execute(RenderingContext gl, GaussianCamera camera) {
+  void execute(RenderingContext gl, GaussianCamera camera,
+      {Matrix4? projectionMatrix, Matrix4? viewMatrix}) {
     if (_program == null || _tex == null) return;
 
     gl

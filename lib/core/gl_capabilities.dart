@@ -2,12 +2,15 @@
 //
 // Minimal GPU capability detection
 
+import 'dart:io';
+
 import 'package:flutter_angle/flutter_angle.dart';
 
 class Caps {
   final bool hasIntegerTex;
 
-  Caps(RenderingContext gl) : hasIntegerTex = _probeR32UI(gl);
+  Caps(RenderingContext gl)
+      : hasIntegerTex = !Platform.isAndroid && _probeR32UI(gl);
 
   static bool _probeR32UI(RenderingContext gl) {
     try {

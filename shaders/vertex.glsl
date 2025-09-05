@@ -6,11 +6,14 @@ uniform highp sampler2D u_texture; // Gaussian splat data texture (RGBA32F forma
 uniform mat4 projection, view;
 uniform vec2 focal;
 uniform vec2 viewport;
-// Order texture storing sorted indices as native unsigned integers.
-// The texture is R32UI and has width equal to GsConst.splatsPerRow (512).
-// The vertex shader uses this to map from the batch/offset into the actual
-// splat index. Uses integer sampling for optimal performance.
+// Order texture storing sorted indices.
+// Uses R32UI (integer) when supported, RGBA32F (float) fallback otherwise.
+// The texture has width equal to GsConst.splatsPerRow (512).
+#ifdef USE_INTEGER_TEXTURE
 uniform highp usampler2D u_orderTexture;
+#else
+uniform highp sampler2D u_orderTexture;
+#endif
 // Maximum allowed ellipse radius in pixels before culling.  Splats whose
 // projected major or minor axis exceeds this threshold are discarded.
 uniform float uMaxSplatSize;
@@ -181,15 +184,23 @@ void main() {
         return;
     }
 
-    // Lookup the actual splat index from the order texture using native integer sampling.
+    // Lookup the actual splat index from the order texture.
     // Compute the texel coordinates by splitting orderIdx into low 9 bits (x) and the
     // remaining bits (y). The texture width (512) matches GsConst.splatsPerRow.
     const int ORDER_TEX_MASK = 0x1ff; // 512 - 1
     int orderX = orderIdx & ORDER_TEX_MASK;
     int orderY = orderIdx >> 9;
-    // Fetch the stored index directly as unsigned integer - no bitcast needed
+    
+    int idx;
+#ifdef USE_INTEGER_TEXTURE
+    // Fetch from R32UI texture
     uint uid = texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r;
-    int idx = int(uid);
+    idx = int(uid);
+#else
+    // Fetch from RGBA32F texture (fallback)
+    float fid = texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r;
+    idx = int(fid + 0.5); // Round to nearest integer
+#endif
 
     // If the fetched index is out of bounds (should not happen but check), cull
     if (idx >= splatCount) {
@@ -220,10 +231,10 @@ void main() {
     vec4 cam_view_space = view * vec4(worldPos, 1.0f);
     vec4 pos2d = projection * cam_view_space;
 
-    if(-cam_view_space.z > 0.0f) {
-        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
-        return;
-    }
+    // if(-cam_view_space.z > 0.0f) {
+    //     gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+    //     return;
+    // }
 
     pos2d.z = clamp(pos2d.z, -abs(pos2d.w), abs(pos2d.w));
     vec2 screenPos = pos2d.xy / pos2d.w;

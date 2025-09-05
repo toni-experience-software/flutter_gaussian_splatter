@@ -7,9 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/camera.dart';
-import 'package:flutter_gaussian_splatter/core/file_processor.dart';
-import 'package:flutter_gaussian_splatter/core/texture_renderer_copy.dart';
+import 'package:flutter_gaussian_splatter/camera/camera.dart';
+import 'package:flutter_gaussian_splatter/files/file_processor.dart';
+import 'package:flutter_gaussian_splatter/renderer/renderer.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// A widget that renders Gaussian splat data using WebGL/ANGLE.
@@ -63,8 +63,8 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   static const int _kInvalidTextureId = -1;
 
   // Core components
-  late final TextureGaussianRenderer _renderer;
-  final FileProcessorImpl _fileProcessor = FileProcessorImpl();
+  late final Renderer _renderer;
+  final FileProcessor _fileProcessor = FileProcessor();
 
   // State management
   FlutterAngleTexture? texture;
@@ -88,7 +88,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   @override
   void initState() {
     super.initState();
-    _renderer = TextureGaussianRenderer(disableAlphaWrite: widget.disableAlphaWrite);
+    _renderer = Renderer(disableAlphaWrite: widget.disableAlphaWrite);
   }
 
   void _requestRender() {
@@ -136,7 +136,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       'Initializing with size: ${validSize.width}x${validSize.height}',
     );
 
-    final camera = GaussianCamera.createDefault(
+    final camera = Camera.createDefault(
       width: validSize.width,
       height: validSize.height,
       ndcYSign: Platform.isAndroid ? 1:-1,

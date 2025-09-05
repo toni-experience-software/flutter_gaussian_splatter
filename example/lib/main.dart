@@ -38,12 +38,15 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
     return Scaffold(
       body: Stack(
         children: [
+          Positioned.fill(child: Container(color: Colors.green,)),
           GaussianSplatterWidget(
             key: _splatterKey,
             assetPath: 'assets/toycar.ply',
-            backgroundAssetPath: 'assets/sky.jpg',
-            showStats: _showStats,
-            enableProfiling: true,
+            disableAlphaWrite: false,
+            
+             backgroundAssetPath: 'assets/sky.jpg',
+           showStats: _showStats,
+           enableProfiling: true,
           ),
           // Background rotation controls
           Positioned(

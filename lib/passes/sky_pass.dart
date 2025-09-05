@@ -4,8 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/services.dart' as services;
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/camera.dart';
-import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
+import 'package:flutter_gaussian_splatter/camera/camera.dart';
+import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
 import 'package:flutter_gaussian_splatter/renderer/render_pass.dart';
 import 'package:vector_math/vector_math.dart';
@@ -96,7 +96,7 @@ class SkyPass extends RenderPass {
   @override
 
   /// Draws the skydome using the provided viewport and camera parameters.
-  void execute(RenderingContext gl, GaussianCamera camera,
+  void execute(RenderingContext gl, Camera camera,
       {Matrix4? projectionMatrix, Matrix4? viewMatrix}) {
     if (_program == null || _tex == null) return;
 

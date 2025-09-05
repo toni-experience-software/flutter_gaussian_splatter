@@ -8,14 +8,14 @@ import 'package:vector_math/vector_math.dart';
 /// ([position], [rotation]) and can produce view/projection matrices
 /// in OpenGL conventions (column-major).
 @immutable
-class GaussianCamera {
+class Camera {
   /// Creates a camera with explicit intrinsics and extrinsics.
   ///
   /// - [width]/[height] are in pixels and must be > 0.
   /// - [fx]/[fy] are focal lengths in pixels and must be > 0.
   /// - [rotation] is **camera → world** (columns are right, up, forward).
   /// - [znear]/[zfar] define clip planes (OpenGL-style), `znear > 0`, `zfar > znear`.
-  const GaussianCamera({
+  const Camera({
     required this.id,
     required this.width,
     required this.height,
@@ -38,7 +38,7 @@ class GaussianCamera {
   /// Creates a reasonable default camera from a horizontal FOV and image size.
   ///
   /// If [position] and [rotation] are omitted, an orbit-style pose is used.
-  factory GaussianCamera.createDefault({
+  factory Camera.createDefault({
     required double width,
     required double height,
     required double ndcYSign,
@@ -77,7 +77,7 @@ class GaussianCamera {
       rot = Matrix3.columns(right, trueUp, forward);
     }
 
-    return GaussianCamera(
+    return Camera(
       id: id,
       width: width.toInt(),
       height: height.toInt(),
@@ -204,7 +204,7 @@ class GaussianCamera {
   bool get yIsFlipped => ndcYSign < 0;
 
   /// Creates a copy with selected fields changed.
-  GaussianCamera copyWith({
+  Camera copyWith({
     int? id,
     int? width,
     int? height,
@@ -216,7 +216,7 @@ class GaussianCamera {
     double? zfar,
     double? ndcYSign,
   }) {
-    return GaussianCamera(
+    return Camera(
       id: id ?? this.id,
       width: width ?? this.width,
       height: height ?? this.height,
@@ -232,7 +232,7 @@ class GaussianCamera {
 
   /// Returns a new camera that preserves the current horizontal FOV
   /// while changing the viewport size.
-  GaussianCamera copyWithViewport({
+  Camera copyWithViewport({
     required double newWidth,
     required double newHeight,
   }) {
@@ -249,7 +249,7 @@ class GaussianCamera {
   }
 
   /// Returns a new camera with updated position and rotation.
-  GaussianCamera copyWithPose({
+  Camera copyWithPose({
     required Vector3 position,
     required Matrix3 rotation,
   }) {

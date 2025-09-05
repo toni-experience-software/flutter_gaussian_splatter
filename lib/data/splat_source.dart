@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/constants.dart';
+import 'package:flutter_gaussian_splatter/constants.dart';
 
 /// Manages the GPU texture representation of Gaussian splat data.
 ///

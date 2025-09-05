@@ -7,9 +7,9 @@ import 'dart:io';
 
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/camera.dart';
-import 'package:flutter_gaussian_splatter/core/constants.dart';
-import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
+import 'package:flutter_gaussian_splatter/camera/camera.dart';
+import 'package:flutter_gaussian_splatter/constants.dart';
+import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/data/order_texture.dart';
 import 'package:flutter_gaussian_splatter/data/splat_source.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
@@ -122,7 +122,7 @@ class SplatDrawPass extends RenderPass {
   @override
   void execute(
     RenderingContext gl,
-    GaussianCamera cam, {
+    Camera cam, {
     Matrix4? projectionMatrix,
     Matrix4? viewMatrix,
   }) {

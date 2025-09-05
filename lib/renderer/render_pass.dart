@@ -1,6 +1,6 @@
 import 'package:flutter_angle/desktop/wrapper.dart';
-import 'package:flutter_gaussian_splatter/core/camera.dart';
-import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
+import 'package:flutter_gaussian_splatter/camera/camera.dart';
+import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Minimal contract all render passes implement.
@@ -23,7 +23,7 @@ abstract class RenderPass {
   /// Record commands and draw.
   void execute(
     RenderingContext gl,
-    GaussianCamera camera, {
+    Camera camera, {
     Matrix4? projectionMatrix,
     Matrix4? viewMatrix,
   });

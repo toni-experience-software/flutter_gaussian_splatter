@@ -1,9 +1,9 @@
 // ignore_for_file: avoid_dynamic_calls
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_gaussian_splatter/core/perf/cpu_only_profiler.dart';
-import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
-import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/cpu_only_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/disjoint_query_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/glfinish_sampler_profiler.dart';
 
 /// Performance statistics from a single frame.
 @immutable

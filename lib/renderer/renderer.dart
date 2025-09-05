@@ -3,25 +3,22 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/background/sky_pass.dart';
-import 'package:flutter_gaussian_splatter/core/camera.dart';
-import 'package:flutter_gaussian_splatter/core/constants.dart';
-import 'package:flutter_gaussian_splatter/core/gl_capabilities.dart';
-import 'package:flutter_gaussian_splatter/core/perf/disjoint_query_profiler.dart';
-import 'package:flutter_gaussian_splatter/core/perf/glfinish_sampler_profiler.dart';
-import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
-import 'package:flutter_gaussian_splatter/core/perf/render_stats.dart';
+import 'package:flutter_gaussian_splatter/camera/camera.dart';
+import 'package:flutter_gaussian_splatter/constants.dart';
 import 'package:flutter_gaussian_splatter/data/order_texture.dart';
 import 'package:flutter_gaussian_splatter/data/splat_source.dart';
+import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
+import 'package:flutter_gaussian_splatter/passes/sky_pass.dart';
 import 'package:flutter_gaussian_splatter/passes/splat_draw_pass.dart';
+import 'package:flutter_gaussian_splatter/perf/disjoint_query_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/glfinish_sampler_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/perf_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/render_stats.dart';
 import 'package:flutter_gaussian_splatter/sorting/depth_sorter.dart' as depth;
 import 'package:vector_math/vector_math.dart';
 
-/// Signature for callbacks delivered by [TextureGaussianRenderer].
-typedef RendererCallback = void Function();
-
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
-class TextureGaussianRenderer {
+class Renderer {
   // Dependencies & context
   late final FlutterAngle _angle;
   late FlutterAngleTexture _targetTexture;
@@ -52,7 +49,7 @@ class TextureGaussianRenderer {
   // Render state & matrices
   var _viewMatrix = Matrix4.identity();
   var _projectionMatrix = Matrix4.identity();
-  GaussianCamera? _camera;
+  Camera? _camera;
 
   // Splat data & vertices
   Uint8List? _splatBuffer;
@@ -68,7 +65,8 @@ class TextureGaussianRenderer {
   bool _disableAlphaWrite = true;
 
   /// Creates a new TextureGaussianRenderer with the specified settings.
-  TextureGaussianRenderer({bool disableAlphaWrite = true}) : _disableAlphaWrite = disableAlphaWrite {
+  Renderer({bool disableAlphaWrite = true})
+      : _disableAlphaWrite = disableAlphaWrite {
     _splatPass = SplatDrawPass(
       source: _splatSource,
       order: _orderTexSvc,
@@ -100,11 +98,11 @@ class TextureGaussianRenderer {
           _camera!.height.toDouble(),
         );
 
-  /// The currently active [GaussianCamera], or `null` if not set.
-  GaussianCamera? get camera => _camera;
+  /// The currently active [Camera], or `null` if not set.
+  Camera? get camera => _camera;
 
-  /// Sets the active [GaussianCamera] and updates matrices.
-  set camera(GaussianCamera? camera) {
+  /// Sets the active [Camera] and updates matrices.
+  set camera(Camera? camera) {
     if (camera == _camera) return;
     _camera = camera;
     _updateViewMatrix();
@@ -168,11 +166,11 @@ class TextureGaussianRenderer {
     );
 
     _gl = _targetTexture.getContext();
-    
+
     // Detect GPU capabilities once
     _caps = Caps(_gl);
     debugPrint('R32UI supported: ${_caps!.hasIntegerTex}');
-    
+
     await _splatPass.init(_gl, caps: _caps);
     _updateProjectionMatrix();
 
@@ -267,7 +265,7 @@ class TextureGaussianRenderer {
   /// to preserve the current field-of-view.
   ///
   /// Returns `true` if the texture actually resized (and we updated matrices).
-  Future<bool> resize(GaussianCamera nextCamera) async {
+  Future<bool> resize(Camera nextCamera) async {
     if (_isResizing) return false;
 
     final current = _camera;

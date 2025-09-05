@@ -139,6 +139,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     final camera = GaussianCamera.createDefault(
       width: validSize.width,
       height: validSize.height,
+      ndcYSign: Platform.isAndroid ? 1:-1,
     );
 
     // Initialize spherical coordinates from initial camera position
@@ -408,10 +409,7 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
           onScaleEnd: _handleScaleEnd,
           child: Stack(
             children: [
-              Transform.scale(
-                scale: Platform.isAndroid ? 1 : -1,
-                child: Texture(textureId: textureId),
-              ),
+              Texture(textureId: textureId),
               if (widget.showStats) _buildStatsOverlay(),
             ],
           ),

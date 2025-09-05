@@ -25,7 +25,10 @@ class GaussianCamera {
     required this.fy,
     this.znear = 0.2,
     this.zfar = 200.0,
-  })  : assert(width > 0,),
+    this.ndcYSign = -1.0, // default for Flutter texture targets
+  })  : assert(
+          width > 0,
+        ),
         assert(height > 0),
         assert(fx > 0),
         assert(fy > 0),
@@ -38,6 +41,7 @@ class GaussianCamera {
   factory GaussianCamera.createDefault({
     required double width,
     required double height,
+    required double ndcYSign,
     double horizontalFovDegrees = 45.0,
     Vector3? position,
     Matrix3? rotation,
@@ -83,6 +87,7 @@ class GaussianCamera {
       fy: fy,
       znear: znear,
       zfar: zfar,
+      ndcYSign: ndcYSign,
     );
   }
 
@@ -113,20 +118,35 @@ class GaussianCamera {
   /// Far clip plane (OpenGL space).
   final double zfar;
 
-  /// Returns a column-major OpenGL projection matrix built from intrinsics.
-  ///
-  /// Matches your previous implementation, with configurable [znear]/[zfar].
+  /// Sign applied to clip-space Y (and to fy for screen-space math).
+  /// +1 = OpenGL default; −1 = vertically flipped (Flutter texture).
+  final double ndcYSign;
+
+  /// Column-major OpenGL projection built from intrinsics.
+  /// Uses [ndcYSign] to control vertical orientation.
   Matrix4 projectionMatrix() {
     final fovX = (2 * fx) / width;
-    final fovY = (2 * fy) / height;
+    final fovY = ndcYSign * (2 * fy) / height;
     final a = zfar / (zfar - znear);
     final b = -(zfar * znear) / (zfar - znear);
 
     return Matrix4(
-      fovX, 0,    0, 0, // col 0
-      0,    fovY, 0, 0, // col 1
-      0,    0,    a, 1, // col 2
-      0,    0,    b, 0, // col 3
+      fovX,
+      0,
+      0,
+      0,
+      0,
+      fovY,
+      0,
+      0,
+      0,
+      0,
+      a,
+      1,
+      0,
+      0,
+      b,
+      0,
     );
   }
 
@@ -137,9 +157,18 @@ class GaussianCamera {
 
     // Upper-left 3×3 = R^T; translation = -R^T * t
     return Matrix4(
-      R.row0.x, R.row0.y, R.row0.z, 0,
-      R.row1.x, R.row1.y, R.row1.z, 0,
-      R.row2.x, R.row2.y, R.row2.z, 0,
+      R.row0.x,
+      R.row0.y,
+      R.row0.z,
+      0,
+      R.row1.x,
+      R.row1.y,
+      R.row1.z,
+      0,
+      R.row2.x,
+      R.row2.y,
+      R.row2.z,
+      0,
       -t.x * R.row0.x - t.y * R.row1.x - t.z * R.row2.x,
       -t.x * R.row0.y - t.y * R.row1.y - t.z * R.row2.y,
       -t.x * R.row0.z - t.y * R.row1.z - t.z * R.row2.z,
@@ -153,14 +182,26 @@ class GaussianCamera {
   List<double> invViewRotation3x3() {
     final R = rotation; // already camera -> world
     return <double>[
-      R.row0.x, R.row1.x, R.row2.x,
-      R.row0.y, R.row1.y, R.row2.y,
-      R.row0.z, R.row1.z, R.row2.z,
+      R.row0.x,
+      R.row1.x,
+      R.row2.x,
+      R.row0.y,
+      R.row1.y,
+      R.row2.y,
+      R.row0.z,
+      R.row1.z,
+      R.row2.z,
     ];
   }
 
-  /// Returns `[fx, fy]`. Useful when passing intrinsics to shaders.
-  List<double> focalXY() => <double>[fx, fy];
+
+    /// Focal for shader uniforms; 
+  double focalXForShader() =>fx;
+  ///Y already carries the NDC sign.
+  double focalYForShader() =>fx * ndcYSign;
+
+  /// Convenience flags
+  bool get yIsFlipped => ndcYSign < 0;
 
   /// Creates a copy with selected fields changed.
   GaussianCamera copyWith({
@@ -173,6 +214,7 @@ class GaussianCamera {
     double? fy,
     double? znear,
     double? zfar,
+    double? ndcYSign,
   }) {
     return GaussianCamera(
       id: id ?? this.id,
@@ -184,6 +226,7 @@ class GaussianCamera {
       fy: fy ?? this.fy,
       znear: znear ?? this.znear,
       zfar: zfar ?? this.zfar,
+      ndcYSign: ndcYSign ?? this.ndcYSign,
     );
   }
 
@@ -201,6 +244,7 @@ class GaussianCamera {
       height: newHeight.toInt(),
       fx: newFx,
       fy: newFy,
+      
     );
   }
 

@@ -3,6 +3,8 @@
 // Draws Gaussian splats using the uploaded SplatSource and OrderTexture.
 // Loads its own program once, caches uniform locations, sets all GL state it needs.
 
+import 'dart:io';
+
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/core/camera.dart';
@@ -53,19 +55,19 @@ class SplatDrawPass extends RenderPass {
   int _indicesPerBatch = 0;
   int _instanceCount = 0;
 
-    @override
+  @override
   String get name => 'splatt_pass';
 
   @override
   Future<void> init(RenderingContext gl, {Caps? caps}) async {
     var vs = await flutter_services.rootBundle.loadString(vsAsset);
     final fs = await flutter_services.rootBundle.loadString(fsAsset);
-    
+
     // Add shader define based on texture format support
     if (caps?.hasIntegerTex ?? false) {
       vs = injectAfterVersion(vs, '#define USE_INTEGER_TEXTURE');
     }
-    
+
     _prog = ShaderFactory.compile(gl,
         vertexSource: vs, fragmentSource: fs, attribBindings: {'position': 0});
 
@@ -134,8 +136,8 @@ class SplatDrawPass extends RenderPass {
 
     // Pipeline state (viewport already set by main renderer)
     gl
-    // We need to enable if we want to merge with 3D content
-      ..disable(WebGL.DEPTH_TEST) 
+      // We need to enable if we want to merge with 3D content
+      ..disable(WebGL.DEPTH_TEST)
       ..depthMask(false)
       // ..depthFunc(WebGL.LEQUAL)
       ..enable(WebGL.BLEND)
@@ -148,12 +150,13 @@ class SplatDrawPass extends RenderPass {
     // Program + uniforms
     gl.useProgram(_prog);
     if (_uProjection != null) {
-      gl.uniformMatrix4fv(_uProjection!, false, projectionMatrix!.storage);
+      gl.uniformMatrix4fv(_uProjection!, false, projectionMatrix.storage);
     }
     if (_uView != null) {
-      gl.uniformMatrix4fv(_uView!, false, viewMatrix!.storage);
+      gl.uniformMatrix4fv(_uView!, false, viewMatrix.storage);
     }
-    if (_uFocal != null) gl.uniform2f(_uFocal!, cam.fx, cam.fy);
+    if (_uFocal != null)
+      gl.uniform2f(_uFocal!, cam.focalXForShader(), cam.focalYForShader());
     if (_uViewport != null) {
       gl.uniform2f(_uViewport!, cam.width.toDouble(), cam.height.toDouble());
     }
@@ -233,20 +236,17 @@ class SplatDrawPass extends RenderPass {
   }
 
   String injectAfterVersion(String src, String defineLine) {
-  // Strip UTF-8 BOM if present (some editors add it)
-  if (src.isNotEmpty && src.codeUnitAt(0) == 0xFEFF) {
-    src = src.substring(1);
+    // Strip UTF-8 BOM if present (some editors add it)
+    if (src.isNotEmpty && src.codeUnitAt(0) == 0xFEFF) {
+      src = src.substring(1);
+    }
+    final lines = src.split('\n');
+    final v = lines.indexWhere((l) => l.trimLeft().startsWith('#version'));
+    if (v >= 0) {
+      lines.insert(v + 1, defineLine);
+      return lines.join('\n');
+    }
+    // If no #version is present (shouldn’t happen), don’t inject before it.
+    return src;
   }
-  final lines = src.split('\n');
-  final v = lines.indexWhere((l) => l.trimLeft().startsWith('#version'));
-  if (v >= 0) {
-    lines.insert(v + 1, defineLine);
-    return lines.join('\n');
-  }
-  // If no #version is present (shouldn’t happen), don’t inject before it.
-  return src;
-}
-
-
-
 }

@@ -112,7 +112,7 @@ class SkyPass extends RenderPass {
         camera.width.toDouble(),
         camera.height.toDouble(),
       )
-      ..uniform2f(_uFocal!, camera.fx, camera.fy)
+      ..uniform2f(_uFocal!, camera.focalXForShader(), camera.focalYForShader())
       ..uniformMatrix3fv(_uInvViewRot!, false, camera.invViewRotation3x3())
       ..uniformMatrix3fv(_uBgRot!, false, _bgRot)
       ..drawArrays(WebGL.TRIANGLES, 0, 3);

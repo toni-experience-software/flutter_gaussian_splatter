@@ -76,9 +76,37 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
 
   bool get _didInit => texture != null;
 
+  bool _frameScheduled = false;
+  bool _frameInFlight = false;
+
   @override
   void initState() {
     super.initState();
+  }
+
+  void _requestRender() {
+    if (_frameScheduled) return;
+    _frameScheduled = true;
+
+    WidgetsBinding.instance.scheduleFrameCallback((_) async {
+      _frameScheduled = false;
+      if (_frameInFlight || textureId < 0) return;
+
+      _frameInFlight = true;
+      try {
+        texture!.activate();
+        await _renderer.frame();
+
+        if (widget.showStats) {
+          _updateStats();
+        }
+
+        // Present exactly once per vsync tick.
+        await texture!.signalNewFrameAvailable();
+      } finally {
+        _frameInFlight = false;
+      }
+    });
   }
 
   @override
@@ -120,7 +148,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
         height: validSize.height,
         enableProfiling: widget.enableProfiling,
       );
-      
+
       _renderer.camera = camera;
       if (widget.backgroundAssetPath != null) {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
@@ -142,14 +170,13 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
 
       debugPrint('Successfully created texture with ID: $textureId');
 
-
       await _loadSplatDataFromAsset(widget.assetPath);
 
       if (!mounted) return;
       setState(() {});
 
       // Initial render after setup
-      await _renderFrame();
+      _requestRender();
     } catch (e) {
       debugPrint('Failed to initialize renderer: $e');
       rethrow;
@@ -165,20 +192,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
         : bytes;
 
     _renderer.setSplatData(processedData);
-    await _renderFrame();
-  }
-
-  Future<void> _renderFrame() async {
-    if (textureId < 0) return;
-
-    texture!.activate();
-    await _renderer.frame();
-
-    if (widget.showStats) {
-      _updateStats();
-    }
-
-    await texture!.signalNewFrameAvailable();
+    _requestRender();
   }
 
   void _updateStats() {
@@ -272,8 +286,8 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
       position: pos,
       rotation: rot,
     );
-    
-    _renderFrame();
+
+    _requestRender();
   }
 
   void _orbitCamera(double deltaX, double deltaY) {
@@ -289,26 +303,21 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
   }
 
   Future<void> _handleResize(Size newSize) async {
-    try {
-      final camera = _renderer.camera?.copyWithViewport(
-        newWidth: newSize.width,
-        newHeight: newSize.height,
-      );
+    final size = _snap(newSize);
+    if (_renderer.currentSize == size) return;
 
-      if (camera == null) {
-        return;
-      }
+    final camera = _renderer.camera?.copyWithViewport(
+      newWidth: size.width,
+      newHeight: size.height,
+    );
+    if (camera == null) return;
 
-      await _renderer.resize(camera);
+    final changed = await _renderer.resize(camera);
+    if (!changed) return;
 
-      // Update texture reference after successful resize
-      texture = _renderer.targetTexture;
-      textureId = texture!.textureId;
-      
-      await _renderFrame();
-    } catch (e) {
-      log('Resize failed: $e');
-    }
+    texture = _renderer.targetTexture;
+    textureId = texture!.textureId;
+    _requestRender();
   }
 
   /// Sets the background rotation for real-time testing
@@ -363,26 +372,27 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     );
   }
 
+  Size _snap(Size s) => Size(s.width.floorToDouble(), s.height.floorToDouble());
+
+  @override
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final currentSize = Size(constraints.maxWidth, constraints.maxHeight);
         final dpr = MediaQuery.of(context).devicePixelRatio;
 
-        if (!_didInit &&
-            currentSize.width > 0 &&
-            currentSize.height > 0 &&
-            mounted) {
-          initPlatformState(currentSize, dpr);
+        // Snap once and use everywhere below
+        final size = _snap(Size(constraints.maxWidth, constraints.maxHeight));
+
+        if (!_didInit && size.width > 0 && size.height > 0 && mounted) {
+          initPlatformState(size, dpr); // pass snapped size
         }
 
-        if (textureId < 0) {
-          return _buildLoadingState();
-        }
+        if (textureId < 0) return _buildLoadingState();
 
-        if (_renderer.currentSize != currentSize) {
-          unawaited(_handleResize(currentSize));
+        // Only resize when snapped size actually changed
+        if (_renderer.currentSize != size) {
+          unawaited(_handleResize(size));
         }
 
         return GestureDetector(

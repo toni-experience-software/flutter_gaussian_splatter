@@ -37,11 +37,7 @@ class TextureGaussianRenderer {
       _splatPass.onSourceChanged();
     },
   );
-  late final SplatDrawPass _splatPass = SplatDrawPass(
-    source: _splatSource,
-    order: _orderTexSvc,
-    disableAlphaWrite: _disableAlphaWrite,
-  );
+  late final SplatDrawPass _splatPass;
 
   //Background
   SkyPass? _bg;
@@ -70,6 +66,15 @@ class TextureGaussianRenderer {
 
   // Optimization settings
   bool _disableAlphaWrite = true;
+
+  /// Creates a new TextureGaussianRenderer with the specified settings.
+  TextureGaussianRenderer({bool disableAlphaWrite = true}) : _disableAlphaWrite = disableAlphaWrite {
+    _splatPass = SplatDrawPass(
+      source: _splatSource,
+      order: _orderTexSvc,
+      disableAlphaWrite: _disableAlphaWrite,
+    );
+  }
 
   // Public API
 

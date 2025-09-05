@@ -22,12 +22,14 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// The [assetPath] must point to a valid .ply file or processed splat data.
   /// Set [showStats] to true to display rendering statistics overlay.
   /// Set [enableProfiling] to true to enable detailed performance profiling
+  /// Set [disableAlphaWrite] to true to optimize bandwidth by disabling alpha writes
   const GaussianSplatterWidget({
     required this.assetPath,
     this.backgroundAssetPath,
     super.key,
     this.showStats = false,
     this.enableProfiling = false,
+    this.disableAlphaWrite = true,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -40,6 +42,10 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// When false (default), uses CPU-only profiling for optimal performance.
   /// When true, enables GPU timing if supported by the platform.
   final bool enableProfiling;
+
+  /// Whether to disable alpha channel writes for bandwidth optimization.
+  /// Only disable if nothing downstream samples the framebuffer's alpha channel.
+  final bool disableAlphaWrite;
 
   /// Path to the asset containing the background image.
   final String? backgroundAssetPath;
@@ -57,7 +63,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   static const int _kInvalidTextureId = -1;
 
   // Core components
-  final TextureGaussianRenderer _renderer = TextureGaussianRenderer();
+  late final TextureGaussianRenderer _renderer;
   final FileProcessorImpl _fileProcessor = FileProcessorImpl();
 
   // State management
@@ -82,6 +88,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   @override
   void initState() {
     super.initState();
+    _renderer = TextureGaussianRenderer(disableAlphaWrite: widget.disableAlphaWrite);
   }
 
   void _requestRender() {

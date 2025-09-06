@@ -134,7 +134,6 @@ class Renderer {
   Future<void> initialize({bool debug = true}) async {
     _angle = FlutterAngle();
     await _angle.init(debug);
-
     await _depthSorter.initialize();
   }
 
@@ -173,7 +172,6 @@ class Renderer {
   /// Drives a single frame.  Call from a `Ticker` / `SchedulerBinding`.
   Future<void> frame() async {
     // Bail during resize/context swap
-    // Reentrancy guard
     if (_isResizing || _inFrame) return;
 
     // Guard readiness up front
@@ -311,24 +309,6 @@ class Renderer {
     return opts.width == desired.width && opts.height == desired.height;
   }
 
-  /// Disposes *all* resources. The instance must not be used afterwards.
-  void dispose() {
-    _bg?.dispose(_gl);
-    _splatPass.dispose(_gl);
-    _splatSource.dispose(_gl);
-    _orderTexSvc.dispose(_gl);
-    _depthSorter.dispose();
-
-    try {
-      _angle.dispose([_targetTexture]);
-    } catch (e) {
-      debugPrint('Warning: error disposing target texture: $e');
-    }
-
-    _disposeProfilerQuietly();
-  }
-
-  // Matrix helpers
   void _updateProjectionMatrix() {
     if (_camera == null) return;
     _projectionMatrix = _camera!.projectionMatrix();
@@ -361,7 +341,7 @@ class Renderer {
 
   // Context‑loss recovery
   Future<void> _recoverFromContextLoss() async {
-    // Rebuild GPU state; if this fails once, 
+    // Rebuild GPU state; if this fails once,
     // leave things null and let next frame retry.
     try {
       _splatPass.dispose(_gl);
@@ -404,5 +384,22 @@ class Renderer {
         } catch (_) {}
       }
     }
+  }
+
+  /// Disposes *all* resources. The instance must not be used afterwards.
+  void dispose() {
+    _bg?.dispose(_gl);
+    _splatPass.dispose(_gl);
+    _splatSource.dispose(_gl);
+    _orderTexSvc.dispose(_gl);
+    _depthSorter.dispose();
+
+    try {
+      _angle.dispose([_targetTexture]);
+    } catch (e) {
+      debugPrint('Warning: error disposing target texture: $e');
+    }
+
+    _disposeProfilerQuietly();
   }
 }

@@ -1,9 +1,4 @@
-// lib/core/gl_capabilities.dart
-//
-// Minimal GPU capability detection
-
 import 'dart:io';
-
 import 'package:flutter_angle/flutter_angle.dart';
 
 /// Checks capabilities of the render pipeline

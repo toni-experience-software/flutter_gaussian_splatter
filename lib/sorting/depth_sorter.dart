@@ -5,57 +5,17 @@ import 'dart:typed_data';
 import 'package:flutter_gaussian_splatter/sorting/sort_result.dart';
 import 'package:vector_math/vector_math.dart';
 
-/// Abstract interface for depth sorting Gaussian splats.
-///
-/// Depth sorting is essential for proper alpha blending of Gaussian splats.
-/// This interface provides both immediate and throttled sorting capabilities.
-abstract class DepthSorter {
-  /// Initialize the depth sorter and any background resources.
-  Future<void> initialize();
-
-  /// Dispose of resources and clean up background processes.
-  void dispose();
-
-  /// Perform immediate depth sorting.
-  ///
-  /// Parameters:
-  /// - [viewProjection]: Current view-projection matrix
-  /// - [buffer]: Gaussian splat data buffer
-  /// - [vertexCount]: Number of vertices to sort
-  ///
-  /// Returns [SortResult] with depth-sorted indices.
-  SortResult runSort(Matrix4 viewProjection, Uint8List buffer, int vertexCount);
-
-  /// Perform throttled depth sorting to reduce computational overhead.
-  ///
-  /// This method implements frame-based throttling and camera movement
-  /// detection to avoid unnecessary sorting operations.
-  ///
-  /// Parameters:
-  /// - [viewProjection]: Current view-projection matrix
-  /// - [buffer]: Gaussian splat data buffer
-  /// - [vertexCount]: Number of vertices to sort
-  void throttledSort(
-    Matrix4 viewProjection,
-    Uint8List buffer,
-    int vertexCount,
-  );
-}
-
-
-/// Implementation of [DepthSorter] using isolate-based processing.
+/// Implementation of DepthSorter using isolate-based processing.
 ///
 /// This implementation provides efficient depth sorting with the following
 /// optimizations:
 /// - Background isolate processing to avoid blocking the main thread
 /// - Memory reuse to reduce garbage collection pressure
-/// - Frame-based throttling to reduce sorting frequency
-/// - Camera movement detection to skip unnecessary sorts
-class DepthSorterImpl implements DepthSorter {
+class DepthSorterImpl {
   /// Creates a new [DepthSorterImpl] with optional sort completion callback.
   ///
   /// Parameters:
-  /// - [onSortComplete]: Optional callback invoked when asynchronous sorting 
+  /// - [onSortComplete]: Optional callback invoked when asynchronous sorting
   /// completes
   DepthSorterImpl({this.onSortComplete});
 
@@ -68,19 +28,10 @@ class DepthSorterImpl implements DepthSorter {
 
   Completer<void>? _ready;
 
-  Matrix4? _lastProjection;
-  int? _lastVertexCount;
-  SortResult? _lastResult;
-  bool _sortRunning = false;
-
-  // Frame-based throttling configuration
-  int _frameCounter = 0;
-  static const int _sortEveryNFrames = 3;
-
   // Reusable arrays for matrix operations
   final List<double> _viewProjectionList = List<double>.filled(16, 0);
 
-  @override
+  /// init
   Future<void> initialize() {
     if (_ready != null) return _ready!.future;
 
@@ -97,8 +48,6 @@ class DepthSorterImpl implements DepthSorter {
         return;
       }
       if (msg is SortResult) {
-        _lastResult = msg;
-        _sortRunning = false;
         onSortComplete?.call(msg);
       }
     });
@@ -112,13 +61,13 @@ class DepthSorterImpl implements DepthSorter {
     return sendPortCompleter.future.then((_) => _ready!.complete());
   }
 
-  @override
+  /// Dispose
   void dispose() {
     _receivePort.close();
     _isolate.kill(priority: Isolate.immediate);
   }
 
-  @override
+  /// Run sort
   SortResult runSort(
     Matrix4 viewProjection,
     Uint8List buffer,
@@ -126,13 +75,6 @@ class DepthSorterImpl implements DepthSorter {
   ) {
     if (_ready == null || !_ready!.isCompleted) {
       throw StateError('DepthSorter.initialize() must be awaited first');
-    }
-
-    // Check if sorting is needed based on camera movement
-    if (_lastProjection != null &&
-        _lastVertexCount == vertexCount &&
-        _matricesEqual(viewProjection, _lastProjection!)) {
-      return _lastResult ?? _empty(viewProjection);
     }
 
     _sendPort.send(
@@ -143,39 +85,7 @@ class DepthSorterImpl implements DepthSorter {
       ),
     );
 
-    // Update tracking state
-    _lastProjection ??= Matrix4.identity();
-    _lastProjection!.setFrom(viewProjection);
-    _lastVertexCount = vertexCount;
-    _sortRunning = true;
-
-    return _lastResult ?? _empty(viewProjection);
-  }
-
-  @override
-  void throttledSort(
-    Matrix4 viewProjection,
-    Uint8List buffer,
-    int vertexCount,
-  ) {
-    // Frame-based throttling
-    _frameCounter++;
-    if (_frameCounter % _sortEveryNFrames != 0) {
-      return;
-    }
-
-    if (_sortRunning) {
-      return;
-    }
-
-    // Camera movement detection
-    if (_lastProjection != null &&
-        _lastVertexCount == vertexCount &&
-        (_dot(_lastProjection!, viewProjection) - 1.0).abs() < 0.1) {
-      return;
-    }
-
-    runSort(viewProjection, buffer, vertexCount);
+    return _empty(viewProjection);
   }
 
   static SortResult _empty(Matrix4 viewProjection) => SortResult(
@@ -183,26 +93,6 @@ class DepthSorterImpl implements DepthSorter {
         viewProjection: viewProjection,
         vertexCount: 0,
       );
-
-  static double _dot(Matrix4 a, Matrix4 b) =>
-      a.entry(0, 2) * b.entry(0, 2) +
-      a.entry(1, 2) * b.entry(1, 2) +
-      a.entry(2, 2) * b.entry(2, 2);
-
-  static bool _matricesEqual(Matrix4 a, Matrix4 b) {
-    return _matricesEqualThreshold(a, b, 0.001);
-  }
-
-  static bool _matricesEqualThreshold(Matrix4 a, Matrix4 b, double threshold) {
-    final storage1 = a.storage;
-    final storage2 = b.storage;
-    for (var i = 0; i < 16; i++) {
-      if ((storage1[i] - storage2[i]).abs() > threshold) {
-        return false;
-      }
-    }
-    return true;
-  }
 
   List<double> _matToListReuse(Matrix4 matrix) {
     final storage = matrix.storage;
@@ -221,7 +111,6 @@ class _SorterIsolateConfig {
 
 /// Request message for depth sorting operation.
 class _SortRequest {
-
   const _SortRequest({
     required this.viewProjection,
     required this.buffer,
@@ -300,11 +189,10 @@ SortResult _performSort(_SortRequest request) {
   // Calculate depth values
   for (var i = 0; i < n; ++i) {
     final base = floatsPerSplat * i;
-    final d = ((vp2 * fBuf[base + 0] +
-                vp6 * fBuf[base + 1] +
-                vp10 * fBuf[base + 2]) *
-            4096)
-        .toInt();
+    final d =
+        ((vp2 * fBuf[base + 0] + vp6 * fBuf[base + 1] + vp10 * fBuf[base + 2]) *
+                4096)
+            .toInt();
     tmp[i] = d;
     if (d < minD) minD = d;
     if (d > maxD) maxD = d;

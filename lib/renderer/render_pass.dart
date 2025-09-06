@@ -4,12 +4,6 @@ import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Minimal contract all render passes implement.
-///
-/// Lifecycle rules:
-/// - `init` is called once after construction.
-/// - `resize` is called when the backbuffer size changes.
-/// - `execute` is called every frame (in pipeline order).
-/// - `dispose` is called once at shutdown or context loss.
 abstract class RenderPass {
   /// Stable, human-readable name for logs/profiling.
   String get name;

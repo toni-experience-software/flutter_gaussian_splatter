@@ -27,6 +27,7 @@ class DepthSorterImpl {
   late SendPort _sendPort;
 
   Completer<void>? _ready;
+  Completer<void>? _firstSortComplete;
 
   // Reusable arrays for matrix operations
   final List<double> _viewProjectionList = List<double>.filled(16, 0);
@@ -49,6 +50,10 @@ class DepthSorterImpl {
       }
       if (msg is SortResult) {
         onSortComplete?.call(msg);
+        // Complete first sort future if this is the first sort
+        if (_firstSortComplete != null && !_firstSortComplete!.isCompleted) {
+          _firstSortComplete!.complete();
+        }
       }
     });
 
@@ -65,6 +70,12 @@ class DepthSorterImpl {
   void dispose() {
     _receivePort.close();
     _isolate.kill(priority: Isolate.immediate);
+  }
+
+  /// Returns a future that completes when the first sort finishes
+  Future<void> get firstSortComplete {
+    _firstSortComplete ??= Completer<void>();
+    return _firstSortComplete!.future;
   }
 
   /// Run sort

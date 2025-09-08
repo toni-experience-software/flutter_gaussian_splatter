@@ -206,7 +206,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
         ? _fileProcessor.processPlyBuffer(bytes)
         : bytes;
 
-    _renderer.setSplatData(processedData);
+    await _renderer.setSplatData(processedData);
     _requestRender();
   }
 

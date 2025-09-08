@@ -223,8 +223,9 @@ class Renderer {
   }
 
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
+  /// Returns a future that completes when the initial sort finishes.
   /// Throws [ArgumentError] if the buffer length is not a multiple of 32.
-  void setSplatData(Uint8List data) {
+  Future<void> setSplatData(Uint8List data) async {
     if (data.length % GsConst.bytesPerSplat != 0) {
       throw ArgumentError.value(
         data.length,
@@ -248,6 +249,8 @@ class Renderer {
     if (_camera != null) {
       final vp = _projectionMatrix.multiplied(_viewMatrix);
       _depthSorter.runSort(vp, data, _splatCount);
+      // Wait for the first sort to complete
+      await _depthSorter.firstSortComplete;
     }
   }
 

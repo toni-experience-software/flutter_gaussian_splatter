@@ -1,8 +1,3 @@
-// lib/data/order_texture.dart
-//
-// Integer order map: each texel holds a splat index.
-// Uses R32UI if available; you can add RGBA8 fallback later if needed.
-
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/constants.dart';
 import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';

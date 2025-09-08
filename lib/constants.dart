@@ -99,13 +99,7 @@ abstract final class GsConst {
   /// cover a very large portion of the viewport.  Rendering such
   /// extremely large splats is expensive because it forces the fragment
   /// shader to run over many pixels and all overlapping splats still
-  /// contribute to the scene due to alpha blending.  PlayCanvas
-  /// addresses this with a work‑buffer pipeline; as a lightweight
-  /// approximation we provide a configurable threshold in pixels
-  /// beyond which splats are culled completely.  This reduces
-  /// overdraw at close distances and improves performance without
-  /// affecting distant views.  Users can adjust this value based on
-  /// their target device performance.
+  /// contribute to the scene due to alpha blending. 
   static const double maxSplatPixelSize = 256;
 
 }

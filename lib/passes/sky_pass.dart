@@ -93,9 +93,8 @@ class SkyPass extends RenderPass {
     _uBg = _uViewport = _uFocal = _uInvViewRot = _uBgRot = null;
   }
 
-  @override
-
   /// Draws the skydome using the provided viewport and camera parameters.
+  @override
   void execute(RenderingContext gl, Camera camera,
       {Matrix4? projectionMatrix, Matrix4? viewMatrix,}) {
     if (_program == null || _tex == null) return;

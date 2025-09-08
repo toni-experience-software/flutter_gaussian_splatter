@@ -2,7 +2,12 @@ import 'package:flutter_angle/desktop/wrapper.dart';
 import 'package:flutter_angle/shared/classes.dart';
 import 'package:flutter_angle/shared/webgl.dart';
 
-/// Builds GLSL programs with optional preprocessor defines and attribute 
+/// Builds GLSL programs with optional preprocessor defines and attribute
+/// bindings.
+/// 
+/// This factory provides methods to compile and link GLSL shader programs,
+/// allowing for the injection of preprocessor defines and explicit attribute 
+/// bindings.
 abstract class ShaderFactory {
   /// Compiles and links a program. Throws on compile/link errors.
   static Program compile(

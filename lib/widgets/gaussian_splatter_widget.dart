@@ -393,7 +393,6 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
   Size _snap(Size s) => Size(s.width.floorToDouble(), s.height.floorToDouble());
 
   @override
-  @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {

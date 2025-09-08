@@ -56,16 +56,11 @@ abstract final class GsConst {
   // ───────────────────────────── Instancing / batching ────────────────────────────
   /// Number of Gaussian splats to draw per instanced batch.
   ///
-  /// PlayCanvas batches 128 splats per draw call to improve vertex shader
+  /// Batches 128 splats per draw call to improve vertex shader
   /// occupancy and reduce overhead.  Grouping multiple splats into a single
   /// instanced mesh means the vertex shader runs only once per batch for
   /// operations common across splats (e.g. base index lookup), and the
   /// hardware can process more vertices per invocation.
-  ///
-  /// A value of 32 is a conservative default that balances GPU vertex cache
-  /// utilization against attribute bandwidth.  You can increase this (e.g.
-  /// 64 or 128) to further reduce the number of instanced draws at the
-  /// expense of a larger static vertex buffer.
   static const int splatsPerInstance = 128;
 
   // ───────────────────────────── Quaternion pack/unpack ─────────────────────────────

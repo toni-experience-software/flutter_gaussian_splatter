@@ -1,16 +1,14 @@
 import 'dart:async';
-import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_angle/flutter_angle.dart';
-import 'package:flutter_gaussian_splatter/core/camera.dart';
-import 'package:flutter_gaussian_splatter/core/file_processor.dart';
-import 'package:flutter_gaussian_splatter/core/texture_renderer.dart';
+import 'package:flutter_gaussian_splatter/camera/camera.dart';
+import 'package:flutter_gaussian_splatter/files/file_processor.dart';
+import 'package:flutter_gaussian_splatter/renderer/renderer.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// A widget that renders Gaussian splat data using WebGL/ANGLE.
@@ -23,12 +21,15 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// The [assetPath] must point to a valid .ply file or processed splat data.
   /// Set [showStats] to true to display rendering statistics overlay.
   /// Set [enableProfiling] to true to enable detailed performance profiling
+  /// Set [disableAlphaWrite] to true to optimize bandwidth by disabling alpha
+  /// writes
   const GaussianSplatterWidget({
     required this.assetPath,
     this.backgroundAssetPath,
     super.key,
     this.showStats = false,
     this.enableProfiling = false,
+    this.disableAlphaWrite = true,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -42,6 +43,11 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// When true, enables GPU timing if supported by the platform.
   final bool enableProfiling;
 
+  /// Whether to disable alpha channel writes for bandwidth optimization.
+  /// Only disable if nothing downstream samples the framebuffer's alpha
+  /// channel.
+  final bool disableAlphaWrite;
+
   /// Path to the asset containing the background image.
   final String? backgroundAssetPath;
 
@@ -49,8 +55,8 @@ class GaussianSplatterWidget extends StatefulWidget {
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
 }
 
-class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
-    with SingleTickerProviderStateMixin {
+/// State for [GaussianSplatterWidget] managing rendering and user interaction.
+class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   // Constants
   static const double _kZoomSensitivity = 0.1;
   static const double _kPanSensitivity = 5;
@@ -59,41 +65,72 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
   static const int _kInvalidTextureId = -1;
 
   // Core components
-  final TextureGaussianRenderer _renderer = TextureGaussianRenderer();
-  final FileProcessorImpl _fileProcessor = FileProcessorImpl();
+  late final Renderer _renderer;
+  final FileProcessor _fileProcessor = FileProcessor();
 
   // State management
+  /// The Flutter ANGLE texture used for rendering.
   FlutterAngleTexture? texture;
+
+  /// The texture ID for the Flutter widget system.
   int textureId = _kInvalidTextureId;
-  bool isUpdating = false;
-  late Ticker ticker;
 
   // Camera controls
   bool _isInteracting = false;
   double _orbitDistance = 1;
   double _theta = 0;
   double _phi = math.pi / 2;
-  final vm.Vector3 _orbitOrigin = vm.Vector3(0,-0.1,0); // center of the orbit
+  final vm.Vector3 _orbitOrigin = vm.Vector3(0, -0.1, 0); // center of the orbit
 
   // Stats
   String _statsText = '';
 
   bool get _didInit => texture != null;
 
+  bool _frameScheduled = false;
+  bool _frameInFlight = false;
+
   @override
   void initState() {
     super.initState();
+    _renderer = Renderer(disableAlphaWrite: widget.disableAlphaWrite);
+  }
+
+  void _requestRender() {
+    if (_frameScheduled) return;
+    _frameScheduled = true;
+
+    WidgetsBinding.instance.scheduleFrameCallback((_) async {
+      _frameScheduled = false;
+      if (_frameInFlight || textureId < 0) return;
+
+      _frameInFlight = true;
+      try {
+        texture!.activate();
+        await _renderer.frame();
+
+        if (widget.showStats) {
+          _updateStats();
+        }
+
+        // Present exactly once per vsync tick.
+        await texture!.signalNewFrameAvailable();
+      } finally {
+        _frameInFlight = false;
+      }
+    });
   }
 
   @override
   void dispose() {
     if (_didInit) {
-      ticker.dispose();
       _renderer.dispose();
     }
     super.dispose();
   }
 
+  /// Initializes the renderer with the given viewport size and device pixel
+  /// ratio.
   Future<void> initPlatformState(Size validSize, double dpr) async {
     if (_didInit) return;
 
@@ -106,9 +143,10 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       'Initializing with size: ${validSize.width}x${validSize.height}',
     );
 
-    final camera = GaussianCamera.createDefault(
+    final camera = Camera.createDefault(
       width: validSize.width,
       height: validSize.height,
+      ndcYSign: Platform.isAndroid ? 1 : -1,
     );
 
     // Initialize spherical coordinates from initial camera position
@@ -119,23 +157,15 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
 
     try {
       await _renderer.initialize();
-      _renderer.camera = camera;
-
-      final vertexShaderCode = await flutter_services.rootBundle.loadString(
-        'packages/flutter_gaussian_splatter/shaders/vertex.glsl',
-      );
-      final fragmentShaderCode = await flutter_services.rootBundle.loadString(
-        'packages/flutter_gaussian_splatter/shaders/frag.glsl',
-      );
 
       await _renderer.setupTexture(
         width: validSize.width,
         height: validSize.height,
-        vertexShaderCode: vertexShaderCode,
-        fragmentShaderCode: fragmentShaderCode,
         enableProfiling: widget.enableProfiling,
       );
-      if(widget.backgroundAssetPath != null) {
+
+      _renderer.camera = camera;
+      if (widget.backgroundAssetPath != null) {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
       }
 
@@ -156,13 +186,12 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
       debugPrint('Successfully created texture with ID: $textureId');
 
       await _loadSplatDataFromAsset(widget.assetPath);
-      _renderer.startRenderLoop();
 
       if (!mounted) return;
       setState(() {});
 
-      ticker = createTicker(_updateTexture);
-      unawaited(ticker.start());
+      // Initial render after setup
+      _requestRender();
     } catch (e) {
       debugPrint('Failed to initialize renderer: $e');
       rethrow;
@@ -177,27 +206,8 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
         ? _fileProcessor.processPlyBuffer(bytes)
         : bytes;
 
-    _renderer.setSplatData(processedData);
-  }
-
-  Future<void> _updateTexture(Duration elapsed) async {
-    if (textureId < 0 || isUpdating) return;
-
-    isUpdating = true;
-    try {
-      texture!.activate();
-      await _renderer.frame();
-
-      if (widget.showStats) {
-        _updateStats();
-      }
-
-      await texture!.signalNewFrameAvailable();
-    } catch (e) {
-      debugPrint("Error updating texture: $e");
-    } finally {
-      isUpdating = false;
-    }
+    await _renderer.setSplatData(processedData);
+    _requestRender();
   }
 
   void _updateStats() {
@@ -216,18 +226,21 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget>
         final perfInfo = StringBuffer()
           ..writeln('Performance [${stats.profilerType ?? 'Unknown'}]:')
           ..writeln(
-            '  CPU: ${stats.fps.toStringAsFixed(1)} FPS (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)',
+            '  CPU: ${stats.fps.toStringAsFixed(1)} FPS'
+            ' (${stats.cpuFrameTimeMs?.toStringAsFixed(1) ?? '?'}ms)',
           );
 
         if (stats.hasGpuTiming && stats.gpuFps != null) {
           perfInfo.writeln(
-            '  GPU: ${stats.gpuFps!.toStringAsFixed(1)} FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)',
+            '  GPU: ${stats.gpuFps!.toStringAsFixed(1)} '
+            ' FPS (${stats.gpuFrameTimeMs!.toStringAsFixed(1)}ms)',
           );
         } else {
           perfInfo.writeln('  GPU: Timing unavailable');
         }
 
-        _statsText = '''$perfInfo
+        _statsText = '''
+$perfInfo
 Rendering:
   Gaussian Splats: ${stats.vertexCount}
   Viewport: ${camera.width} × ${camera.height}px
@@ -269,72 +282,66 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
   }
 
   void _applyCameraFromSpherical() {
-  final r = _orbitDistance;
+    final r = _orbitDistance;
 
-  final rel = vm.Vector3(
-    r * math.sin(_phi) * math.sin(_theta),
-    r * math.cos(_phi),
-    r * math.sin(_phi) * math.cos(_theta),
-  );
+    final rel = vm.Vector3(
+      r * math.sin(_phi) * math.sin(_theta),
+      r * math.cos(_phi),
+      r * math.sin(_phi) * math.cos(_theta),
+    );
 
-  // Position is orbit-origin + relative spherical offset
-  final pos = _orbitOrigin + rel;
+    // Position is orbit-origin + relative spherical offset
+    final pos = _orbitOrigin + rel;
 
-  // Look at the orbit origin
-  final forward = (_orbitOrigin - pos).normalized();
-  final up = vm.Vector3(0, -1, 0); // your coordinate system
-  final right = up.cross(forward).normalized();
-  final trueUp = forward.cross(right).normalized();
-  final rot = vm.Matrix3.columns(right, trueUp, forward);
+    // Look at the orbit origin
+    final forward = (_orbitOrigin - pos).normalized();
+    final up = vm.Vector3(0, -1, 0); // your coordinate system
+    final right = up.cross(forward).normalized();
+    final trueUp = forward.cross(right).normalized();
+    final rot = vm.Matrix3.columns(right, trueUp, forward);
 
-  _renderer.camera = _renderer.camera?.withUpdatedPosAndRot(
-    position: pos,
-    rotation: rot,
-  );
-}
+    _renderer.camera = _renderer.camera?.copyWithPose(
+      position: pos,
+      rotation: rot,
+    );
 
+    _requestRender();
+  }
 
-void _orbitCamera(double deltaX, double deltaY) {
-  _theta -= deltaX;
-  _phi = (_phi - deltaY).clamp(0.01, math.pi - 0.01);
-  _applyCameraFromSpherical();
-}
+  void _orbitCamera(double deltaX, double deltaY) {
+    _theta -= deltaX;
+    _phi = (_phi - deltaY).clamp(0.01, math.pi - 0.01);
+    _applyCameraFromSpherical();
+  }
 
-void _zoomCamera(double delta) {
-  _orbitDistance =
-      (_orbitDistance + delta).clamp(_kMinOrbitDistance, _kMaxOrbitDistance);
-  _applyCameraFromSpherical();
-}
-
-
+  void _zoomCamera(double delta) {
+    _orbitDistance =
+        (_orbitDistance + delta).clamp(_kMinOrbitDistance, _kMaxOrbitDistance);
+    _applyCameraFromSpherical();
+  }
 
   Future<void> _handleResize(Size newSize) async {
-    try {
-      final camera = _renderer.camera?.withUpdatedViewport(
-        newWidth: newSize.width,
-        newHeight: newSize.height,
-      );
+    final size = _snap(newSize);
+    if (_renderer.currentSize == size) return;
 
-      if (camera == null) {
-        return;
-      }
+    final camera = _renderer.camera?.copyWithViewport(
+      newWidth: size.width,
+      newHeight: size.height,
+    );
+    if (camera == null) return;
 
-      await _renderer.resize(camera);
+    final changed = await _renderer.resize(camera);
+    if (!changed) return;
 
-      // Update texture reference after successful resize
-      texture = _renderer.targetTexture;
-      textureId = texture!.textureId;
-    } catch (e) {
-      log('Resize failed: $e');
-    }
+    texture = _renderer.targetTexture;
+    textureId = texture!.textureId;
+    _requestRender();
   }
 
   /// Sets the background rotation for real-time testing
   void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
     _renderer.setBackgroundRotation(yawDegrees, pitchDegrees);
   }
-
-
 
   Widget _buildStatsOverlay() {
     return Positioned(
@@ -383,26 +390,26 @@ void _zoomCamera(double delta) {
     );
   }
 
+  Size _snap(Size s) => Size(s.width.floorToDouble(), s.height.floorToDouble());
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final currentSize = Size(constraints.maxWidth, constraints.maxHeight);
         final dpr = MediaQuery.of(context).devicePixelRatio;
 
-        if (!_didInit &&
-            currentSize.width > 0 &&
-            currentSize.height > 0 &&
-            mounted) {
-          initPlatformState(currentSize, dpr);
+        // Snap once and use everywhere below
+        final size = _snap(Size(constraints.maxWidth, constraints.maxHeight));
+
+        if (!_didInit && size.width > 0 && size.height > 0 && mounted) {
+          initPlatformState(size, dpr); // pass snapped size
         }
 
-        if (textureId < 0) {
-          return _buildLoadingState();
-        }
+        if (textureId < 0) return _buildLoadingState();
 
-        if (_renderer.currentSize != currentSize) {
-          unawaited(_handleResize(currentSize));
+        // Only resize when snapped size actually changed
+        if (_renderer.currentSize != size) {
+          unawaited(_handleResize(size));
         }
 
         return GestureDetector(
@@ -411,10 +418,7 @@ void _zoomCamera(double delta) {
           onScaleEnd: _handleScaleEnd,
           child: Stack(
             children: [
-              Transform.scale(
-                scale: Platform.isAndroid ? 1 : -1,
-                child: Texture(textureId: textureId),
-              ),
+              Texture(textureId: textureId),
               if (widget.showStats) _buildStatsOverlay(),
             ],
           ),

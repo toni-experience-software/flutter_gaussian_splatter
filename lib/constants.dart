@@ -10,7 +10,6 @@
 /// SH0 (DC) is folded into base RGB. The 45 residual SH coeffs (l=1..3)
 /// are stored as 12 packed uint32 words (48 B) and unpacked in the shader.
 abstract final class GsConst {
-  // ───────────────────────────── CPU / File-packed splat ─────────────────────────────
   /// Total bytes per splat in the binary file / CPU buffer (aligned).
   static const int bytesPerSplat = 128;
 
@@ -35,7 +34,6 @@ abstract final class GsConst {
   static const int shOffset    = 32;
   static const int shPackedWords = 12; // 12×uint32 = 48 B @ [32..79]
 
-  // ───────────────────────────── GPU texture atlas ───────────────────────────
   /// Texels per splat in the atlas:
   ///   P0: pos.xyz + quat(w) | P1: scale.xyz + color(w) | P2–P4: SH words
   static const int pixelsPerSplat = 5;
@@ -53,18 +51,24 @@ abstract final class GsConst {
   static const int splatsPerRow = texWidth ~/ pixelsPerSplat;   // 512
   static const int splatIdxColMask = splatsPerRow - 1;          // 0x1ff
 
-  // ───────────────────────────── Quaternion pack/unpack ─────────────────────────────
+  /// Number of Gaussian splats to draw per instanced batch.
+  ///
+  /// Batches 128 splats per draw call to improve vertex shader
+  /// occupancy and reduce overhead.  Grouping multiple splats into a single
+  /// instanced mesh means the vertex shader runs only once per batch for
+  /// operations common across splats (e.g. base index lookup), and the
+  /// hardware can process more vertices per invocation.
+  static const int splatsPerInstance = 128;
+
   /// CPU packing: q_byte = clamp(round(q * quatScale + quatByteMid), 0, 255)
   /// Shader decode: q = (byte - quatByteMid) / quatScale, then normalized.
   static const int quatByteMid = 128;
   static const int quatScale   = 128;
   static const int byteMax     = 255;
 
-  // ───────────────────────────── Covariance (renderer) ───────────────────────
-  /// Σ' = covarianceScale * (M * Mᵀ) as in the paper/reference implementation.
+  /// Σ' = covarianceScale * (M * Mᵀ) as in the paper implementation.
   static const double covarianceScale = 4;
 
-  // ───────────────────────────── Colour / Spherical Harmonics ─────────────────────────
   /// Real Y₀⁰ normalization (DC basis). Base RGB stores 0.5 + shC0 * f_dc.
   static const double shC0   = 0.28209479177387814;
 
@@ -79,8 +83,16 @@ abstract final class GsConst {
   ///  + shC0 * f_dc).
   static const double baseColourBias = 0.5;
 
-  // ───────────────────────────── Defaults ─────────────────────────────
   /// Fallback linear scale if PLY lacks scale_* properties.
   static const double defaultScale = 0.01;
+
+  /// Maximum pixel diameter for a single splat in screen space.
+  ///
+  /// When zooming in close to a Gaussian, its projected ellipse can
+  /// cover a very large portion of the viewport.  Rendering such
+  /// extremely large splats is expensive because it forces the fragment
+  /// shader to run over many pixels and all overlapping splats still
+  /// contribute to the scene due to alpha blending. 
+  static const double maxSplatPixelSize = 256;
 
 }

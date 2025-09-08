@@ -6,12 +6,25 @@ uniform highp sampler2D u_texture; // Gaussian splat data texture (RGBA32F forma
 uniform mat4 projection, view;
 uniform vec2 focal;
 uniform vec2 viewport;
+// Order texture storing sorted indices.
+// Uses R32UI (integer) when supported, RGBA32F (float) fallback otherwise.
+// The texture has width equal to GsConst.splatsPerRow (512).
+#ifdef USE_INTEGER_TEXTURE
+uniform highp usampler2D u_orderTexture;
+#else
+uniform highp sampler2D u_orderTexture;
+#endif
+// Maximum allowed ellipse radius in pixels before culling.  Splats whose
+// projected major or minor axis exceeds this threshold are discarded.
+uniform float uMaxSplatSize;
 
-in vec2 position;       // Quad corner coordinates (-1 to 1)
-in float index;         // Gaussian splat index
+in vec3 position;       // Quad corner coordinates (-1 to 1) with local offset in .z
+// Base index computed from gl_InstanceID - no attribute needed
 
 out mediump vec4 vColor;
 out mediump vec2 vPosition;     // Quad corner coordinates for fragment shader
+
+uniform int splatCount;
 
 // ---------- helpers unchanged ----------
 float unpackHalf(uint half_val) {
@@ -159,9 +172,46 @@ mat3 quatToMat3(vec4 R) {
 }
 
 void main() {
-    int idx = int(index);
+    // Compute the absolute index into the order texture using gl_InstanceID.
+    // Each instance draws 128 splats, so base = gl_InstanceID * 128.
+    // Add local offset from position.z to get the final index.
+    int orderIdx = gl_InstanceID * 128 + int(position.z + 0.5);
 
-    // base_uv for 5-texel layout
+    // If this vertex references an entry beyond the number of splats, push it
+    // behind the far plane.  This culls extra vertices in the final batch.
+    if (orderIdx >= splatCount) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
+
+    // Lookup the actual splat index from the order texture.
+    // Compute the texel coordinates by splitting orderIdx into low 9 bits (x) and the
+    // remaining bits (y). The texture width (512) matches GsConst.splatsPerRow.
+    const int ORDER_TEX_MASK = 0x1ff; // 512 - 1
+    int orderX = orderIdx & ORDER_TEX_MASK;
+    int orderY = orderIdx >> 9;
+    
+    int idx;
+#ifdef USE_INTEGER_TEXTURE
+    // Fetch from R32UI texture
+    uint uid = texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r;
+    idx = int(uid);
+#else
+    // Fetch from RGBA32F texture (fallback)
+    float fid = texelFetch(u_orderTexture, ivec2(orderX, orderY), 0).r;
+    idx = int(fid + 0.5); // Round to nearest integer
+#endif
+
+    // If the fetched index is out of bounds (should not happen but check), cull
+    if (idx >= splatCount) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
+
+    // base_uv for 5-texel layout.  After resolving the actual splat index we
+    // compute the horizontal coordinate using the low 9 bits (masked by
+    // 0x1ff) and the vertical coordinate using the high bits.  Each splat
+    // occupies 5 texels horizontally.
     ivec2 base_uv = ivec2((idx & 0x1ff) * 5, idx >> 9);
 
     // Fetch P0 and P1 (pos/quat, scale/color)
@@ -247,6 +297,17 @@ void main() {
         return;
     }
 
+    // Cull splats whose projected radius exceeds a maximum threshold.
+    // A very large ellipse implies that the splat covers the entire
+    // viewport and will result in significant overdraw.  By discarding
+    // such splats we approximate the behaviour of the work‑buffer
+    // pipeline at close distances.  The threshold is provided via
+    // uniform uMaxSplatSize.
+    if (max(s1, s2) > uMaxSplatSize) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
+
     vec2 diagVec = normalize(vec2(od, l1 - d1));
     // Compensate for coordinate system change: [-2,2] → [-1,1] requires 2x scale
     vec2 majorAxis = min(s1, 1024.0f) * 2.0f * diagVec;
@@ -281,7 +342,7 @@ void main() {
     vec3 final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0f)));
 
 // Corner clipping & final position
-    vec2 corner_uv = position;
+    vec2 corner_uv = position.xy;
     clipCorner(majorAxis, minorAxis, corner_uv, base_color_srgb.a);
 
     vec2 offsetClip = (corner_uv.x * majorAxis + corner_uv.y * minorAxis) * c; // 'c' already computed above

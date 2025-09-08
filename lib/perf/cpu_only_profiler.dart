@@ -1,6 +1,6 @@
 import 'dart:core';
-import 'package:flutter_gaussian_splatter/core/perf/ewma.dart';
-import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/ewma.dart';
+import 'package:flutter_gaussian_splatter/perf/perf_profiler.dart';
 
 /// CPU-only performance profiler fallback implementation.
 class CpuOnlyProfiler implements PerfProfiler {

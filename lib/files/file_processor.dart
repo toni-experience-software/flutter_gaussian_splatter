@@ -3,7 +3,7 @@ import 'dart:developer';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter_gaussian_splatter/core/constants.dart';
+import 'package:flutter_gaussian_splatter/constants.dart';
 
 /// Processes PLY files containing Gaussian splat data.
 ///
@@ -11,7 +11,7 @@ import 'package:flutter_gaussian_splatter/core/constants.dart';
 /// and converting the data into the optimized binary format required by
 /// the Gaussian splat renderer. The processor also handles importance-based
 /// sorting to optimize rendering performance.
-class FileProcessorImpl {
+class FileProcessor {
   /// Checks if the provided data represents a valid PLY file.
   ///
   /// Verifies the PLY magic header ("ply\n") at the beginning of the file.

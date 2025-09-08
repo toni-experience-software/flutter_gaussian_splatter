@@ -1,7 +1,7 @@
 // ignore_for_file: avoid_dynamic_calls
 
-import 'package:flutter_gaussian_splatter/core/perf/ewma.dart';
-import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/ewma.dart';
+import 'package:flutter_gaussian_splatter/perf/perf_profiler.dart';
 
 /// GPU profiler using glFinish() sampling for approximate GPU timing.
 class GlFinishSamplerProfiler implements PerfProfiler {

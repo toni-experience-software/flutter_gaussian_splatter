@@ -5,8 +5,8 @@ import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart' as ffix;
 // Pull in the GLES constants (re-exported by flutter_angle)
 import 'package:flutter_angle/flutter_angle.dart' as angle;
-import 'package:flutter_gaussian_splatter/core/perf/ewma.dart';
-import 'package:flutter_gaussian_splatter/core/perf/perf_profiler.dart';
+import 'package:flutter_gaussian_splatter/perf/ewma.dart';
+import 'package:flutter_gaussian_splatter/perf/perf_profiler.dart';
 
 /// GPU profiler using EXT_disjoint_timer_query on ANGLE / OpenGL ES.
 /// Pass the **native GL binding object directly**

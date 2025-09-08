@@ -231,10 +231,10 @@ void main() {
     vec4 cam_view_space = view * vec4(worldPos, 1.0f);
     vec4 pos2d = projection * cam_view_space;
 
-    // if(-cam_view_space.z > 0.0f) {
-    //     gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
-    //     return;
-    // }
+    if(-cam_view_space.z > 0.0f) {
+        gl_Position = vec4(0.0f, 0.0f, 2.0f, 1.0f);
+        return;
+    }
 
     pos2d.z = clamp(pos2d.z, -abs(pos2d.w), abs(pos2d.w));
     vec2 screenPos = pos2d.xy / pos2d.w;

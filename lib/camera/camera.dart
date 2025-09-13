@@ -133,7 +133,7 @@ class Camera {
   /// Column-major OpenGL projection built from intrinsics.
   /// Uses [ndcYSign] to control vertical orientation.
   Matrix4 projectionMatrix() {
-    final fovX = (2 * fx) / width;
+    final fovX = -(2 * fx) / width;  // Negate to fix horizontal mirroring
     final fovY = ndcYSign * (2 * fy) / height;
     final a = zfar / (zfar - znear);
     final b = -(zfar * znear) / (zfar - znear);
@@ -203,10 +203,10 @@ class Camera {
   }
 
   /// Focal for shader uniforms;
-  double focalXForShader() => fx;
+  double focalXForShader() => -fx;  // Negate to match projection matrix
 
   ///Y already carries the NDC sign.
-  double focalYForShader() => fx * ndcYSign;
+  double focalYForShader() => fy * ndcYSign;
 
   /// Convenience flags
   bool get yIsFlipped => ndcYSign < 0;

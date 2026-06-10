@@ -79,11 +79,25 @@ class DepthSorterImpl {
   }
 
   /// Run sort
+  void setSplatData(Uint8List buffer, int vertexCount) {
+    if (_ready == null || !_ready!.isCompleted) {
+      throw StateError('DepthSorter.initialize() must be awaited first');
+    }
+
+    _sendPort.send(
+      _SetDataRequest(
+        buffer: buffer,
+        vertexCount: vertexCount,
+      ),
+    );
+  }
+
+  /// Run sort
   SortResult runSort(
-    Matrix4 viewProjection,
-    Uint8List buffer,
-    int vertexCount,
-  ) {
+    Matrix4 viewProjection, {
+    required int generation,
+    required int dataGeneration,
+  }) {
     if (_ready == null || !_ready!.isCompleted) {
       throw StateError('DepthSorter.initialize() must be awaited first');
     }
@@ -91,18 +105,29 @@ class DepthSorterImpl {
     _sendPort.send(
       _SortRequest(
         viewProjection: _matToListReuse(viewProjection),
-        buffer: buffer,
-        vertexCount: vertexCount,
+        generation: generation,
+        dataGeneration: dataGeneration,
       ),
     );
 
-    return _empty(viewProjection);
+    return _empty(
+      viewProjection,
+      generation: generation,
+      dataGeneration: dataGeneration,
+    );
   }
 
-  static SortResult _empty(Matrix4 viewProjection) => SortResult(
+  static SortResult _empty(
+    Matrix4 viewProjection, {
+    required int generation,
+    required int dataGeneration,
+  }) =>
+      SortResult(
         depthIndex: Uint32List(0),
         viewProjection: viewProjection,
         vertexCount: 0,
+        generation: generation,
+        dataGeneration: dataGeneration,
       );
 
   List<double> _matToListReuse(Matrix4 matrix) {
@@ -121,15 +146,25 @@ class _SorterIsolateConfig {
 }
 
 /// Request message for depth sorting operation.
-class _SortRequest {
-  const _SortRequest({
-    required this.viewProjection,
+class _SetDataRequest {
+  const _SetDataRequest({
     required this.buffer,
     required this.vertexCount,
   });
-  final List<double> viewProjection;
   final Uint8List buffer;
   final int vertexCount;
+}
+
+/// Request message for depth sorting operation.
+class _SortRequest {
+  const _SortRequest({
+    required this.viewProjection,
+    required this.generation,
+    required this.dataGeneration,
+  });
+  final List<double> viewProjection;
+  final int generation;
+  final int dataGeneration;
 }
 
 /// Entry point for the sorting isolate.
@@ -139,7 +174,9 @@ void _sortIsolateEntry(_SorterIsolateConfig config) {
   toMain.send(port.sendPort);
 
   port.listen((msg) {
-    if (msg is _SortRequest) {
+    if (msg is _SetDataRequest) {
+      _setIsolateData(msg);
+    } else if (msg is _SortRequest) {
       toMain.send(_performSort(msg));
     }
   });
@@ -150,24 +187,44 @@ Int32List? _isolateTmpArray;
 Uint32List? _isolateCountsArray;
 Uint32List? _isolateStartsArray;
 Uint32List? _isolateOutputArray;
+Float32List? _isolatePositions;
+int _isolateVertexCount = 0;
 const int _isolateBuckets = 256 * 256;
+
+void _setIsolateData(_SetDataRequest request) {
+  _isolateVertexCount = request.vertexCount;
+  if (request.vertexCount <= 0 || request.buffer.isEmpty) {
+    _isolatePositions = Float32List(0);
+    return;
+  }
+
+  final fBuf = Float32List.view(request.buffer.buffer);
+  final floatsPerSplat =
+      request.buffer.lengthInBytes ~/ request.vertexCount ~/ 4;
+  final positions = Float32List(request.vertexCount * 3);
+  for (var i = 0; i < request.vertexCount; i++) {
+    final sourceBase = floatsPerSplat * i;
+    final targetBase = i * 3;
+    positions[targetBase] = fBuf[sourceBase];
+    positions[targetBase + 1] = fBuf[sourceBase + 1];
+    positions[targetBase + 2] = fBuf[sourceBase + 2];
+  }
+  _isolatePositions = positions;
+}
 
 /// Perform the actual depth sorting using radix sort algorithm.
 SortResult _performSort(_SortRequest request) {
-  final n = request.vertexCount;
-  if (n == 0 || request.buffer.isEmpty) {
+  final n = _isolateVertexCount;
+  final positions = _isolatePositions;
+  if (n == 0 || positions == null || positions.isEmpty) {
     return SortResult(
       depthIndex: Uint32List(0),
       viewProjection: Matrix4.fromList(request.viewProjection),
       vertexCount: 0,
+      generation: request.generation,
+      dataGeneration: request.dataGeneration,
     );
   }
-
-  final fBuf = Float32List.view(request.buffer.buffer);
-
-  // ----- NEW: floats per splat -----
-  final floatsPerSplat =
-      request.buffer.lengthInBytes ~/ request.vertexCount ~/ 4;
 
   // Initialize or reuse arrays
   if (_isolateTmpArray == null || _isolateTmpArray!.length < n) {
@@ -199,11 +256,12 @@ SortResult _performSort(_SortRequest request) {
 
   // Calculate depth values
   for (var i = 0; i < n; ++i) {
-    final base = floatsPerSplat * i;
-    final d =
-        ((vp2 * fBuf[base + 0] + vp6 * fBuf[base + 1] + vp10 * fBuf[base + 2]) *
-                4096)
-            .toInt();
+    final base = i * 3;
+    final d = ((vp2 * positions[base] +
+                vp6 * positions[base + 1] +
+                vp10 * positions[base + 2]) *
+            4096)
+        .toInt();
     tmp[i] = d;
     if (d < minD) minD = d;
     if (d > maxD) maxD = d;
@@ -216,9 +274,11 @@ SortResult _performSort(_SortRequest request) {
       _isolateOutputArray![i] = i;
     }
     return SortResult(
-      depthIndex: Uint32List.fromList(_isolateOutputArray!.take(n).toList()),
+      depthIndex: _isolateOutputArray!.sublist(0, n),
       viewProjection: Matrix4.fromList(request.viewProjection),
       vertexCount: n,
+      generation: request.generation,
+      dataGeneration: request.dataGeneration,
     );
   }
 
@@ -245,8 +305,10 @@ SortResult _performSort(_SortRequest request) {
   }
 
   return SortResult(
-    depthIndex: Uint32List.fromList(out.take(n).toList()),
+    depthIndex: out.sublist(0, n),
     viewProjection: Matrix4.fromList(request.viewProjection),
     vertexCount: n,
+    generation: request.generation,
+    dataGeneration: request.dataGeneration,
   );
 }

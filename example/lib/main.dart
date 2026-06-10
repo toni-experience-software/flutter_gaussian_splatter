@@ -24,7 +24,8 @@ class GaussianSplatterHomePage extends StatefulWidget {
   const GaussianSplatterHomePage({super.key});
 
   @override
-  State<GaussianSplatterHomePage> createState() => _GaussianSplatterHomePageState();
+  State<GaussianSplatterHomePage> createState() =>
+      _GaussianSplatterHomePageState();
 }
 
 class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
@@ -38,15 +39,17 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
     return Scaffold(
       body: Stack(
         children: [
-          Positioned.fill(child: Container(color: Colors.green,)),
+          Positioned.fill(
+              child: Container(
+            color: Colors.green,
+          )),
           GaussianSplatterWidget(
             key: _splatterKey,
             assetPath: 'assets/toycar.ply',
             disableAlphaWrite: false,
-            
-             backgroundAssetPath: 'assets/sky.jpg',
-           showStats: _showStats,
-           enableProfiling: true,
+            backgroundAssetPath: 'assets/sky.jpg',
+            showStats: _showStats,
+            enableProfiling: true,
           ),
           // Background rotation controls
           Positioned(
@@ -83,7 +86,8 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
                       setState(() {
                         _yaw = value;
                       });
-                      _splatterKey.currentState?.setBackgroundRotation(_yaw, _pitch);
+                      _splatterKey.currentState
+                          ?.setBackgroundRotation(_yaw, _pitch);
                     },
                   ),
                   const SizedBox(height: 8),
@@ -99,20 +103,22 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
                       setState(() {
                         _pitch = value;
                       });
-                      _splatterKey.currentState?.setBackgroundRotation(_yaw, _pitch);
+                      _splatterKey.currentState
+                          ?.setBackgroundRotation(_yaw, _pitch);
                     },
-                   ),
-                   const SizedBox(height: 8),
-                   ElevatedButton(
-                     onPressed: () {
-                       setState(() {
-                         _yaw = 0.0;
-                         _pitch = 0.0;
-                       });
-                       _splatterKey.currentState?.setBackgroundRotation(_yaw, _pitch);
-                     },
-                     child: const Text('Reset'),
-                   ),
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton(
+                    onPressed: () {
+                      setState(() {
+                        _yaw = 0.0;
+                        _pitch = 0.0;
+                      });
+                      _splatterKey.currentState
+                          ?.setBackgroundRotation(_yaw, _pitch);
+                    },
+                    child: const Text('Reset'),
+                  ),
                 ],
               ),
             ),

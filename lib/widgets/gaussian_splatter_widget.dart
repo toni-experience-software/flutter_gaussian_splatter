@@ -1,14 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' as flutter_services;
-import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/files/file_processor.dart';
-import 'package:flutter_gaussian_splatter/renderer/renderer.dart';
+import 'package:flutter_gaussian_splatter/renderer/backend_selector.dart';
+import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// A widget that renders Gaussian splat data using WebGL/ANGLE.
@@ -30,6 +30,7 @@ class GaussianSplatterWidget extends StatefulWidget {
     this.showStats = false,
     this.enableProfiling = false,
     this.disableAlphaWrite = true,
+    this.backend = SplatBackend.auto,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -51,6 +52,9 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// Path to the asset containing the background image.
   final String? backgroundAssetPath;
 
+  /// Rendering backend to use.
+  final SplatBackend backend;
+
   @override
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
 }
@@ -62,18 +66,15 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   static const double _kPanSensitivity = 5;
   static const double _kMinOrbitDistance = 0.1;
   static const double _kMaxOrbitDistance = 100;
-  static const int _kInvalidTextureId = -1;
 
   // Core components
-  late final Renderer _renderer;
+  late SplatRenderer _renderer;
   final FileProcessor _fileProcessor = FileProcessor();
-
-  // State management
-  /// The Flutter ANGLE texture used for rendering.
-  FlutterAngleTexture? texture;
-
-  /// The texture ID for the Flutter widget system.
-  int textureId = _kInvalidTextureId;
+  bool _isReady = false;
+  bool _initStarted = false;
+  Object? _initError;
+  Size? _logicalSize;
+  double _lastDpr = 1;
 
   // Camera controls
   bool _isInteracting = false;
@@ -85,7 +86,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   // Stats
   String _statsText = '';
 
-  bool get _didInit => texture != null;
+  bool get _didInit => _renderer.camera != null;
 
   bool _frameScheduled = false;
   bool _frameInFlight = false;
@@ -93,7 +94,27 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   @override
   void initState() {
     super.initState();
-    _renderer = Renderer(disableAlphaWrite: widget.disableAlphaWrite);
+    _renderer = _createRenderer();
+  }
+
+  SplatRenderer _createRenderer() {
+    return createRenderer(
+      widget.backend,
+      disableAlphaWrite: widget.disableAlphaWrite,
+    );
+  }
+
+  void _resetRendererForRetry() {
+    if (_didInit) {
+      try {
+        _renderer.dispose();
+      } catch (_) {}
+    }
+    _renderer = _createRenderer();
+    _isReady = false;
+    _initStarted = false;
+    _initError = null;
+    _logicalSize = null;
   }
 
   void _requestRender() {
@@ -102,19 +123,15 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
 
     WidgetsBinding.instance.scheduleFrameCallback((_) async {
       _frameScheduled = false;
-      if (_frameInFlight || textureId < 0) return;
+      if (!mounted || _frameInFlight || !_isReady) return;
 
       _frameInFlight = true;
       try {
-        texture!.activate();
         await _renderer.frame();
 
-        if (widget.showStats) {
+        if (mounted && widget.showStats) {
           _updateStats();
         }
-
-        // Present exactly once per vsync tick.
-        await texture!.signalNewFrameAvailable();
       } finally {
         _frameInFlight = false;
       }
@@ -132,20 +149,26 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   /// Initializes the renderer with the given viewport size and device pixel
   /// ratio.
   Future<void> initPlatformState(Size validSize, double dpr) async {
-    if (_didInit) return;
+    if (_initStarted || _didInit) return;
+    _initStarted = true;
+    _initError = null;
 
     if (validSize.width <= 0 || validSize.height <= 0) {
       debugPrint('Invalid size for initialization: $validSize');
+      _initStarted = false;
       return;
     }
 
     debugPrint(
-      'Initializing with size: ${validSize.width}x${validSize.height}',
+      'Initializing with size: ${validSize.width}x${validSize.height} @ $dpr',
     );
 
+    _logicalSize = _snap(validSize);
+    _lastDpr = dpr;
+    final renderSize = _physicalSize(validSize, dpr);
     final camera = Camera.createDefault(
-      width: validSize.width,
-      height: validSize.height,
+      width: renderSize.width,
+      height: renderSize.height,
       ndcYSign: Platform.isAndroid ? 1 : -1,
     );
 
@@ -158,9 +181,9 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     try {
       await _renderer.initialize();
 
-      await _renderer.setupTexture(
-        width: validSize.width,
-        height: validSize.height,
+      await _renderer.setup(
+        width: renderSize.width.toInt(),
+        height: renderSize.height.toInt(),
         enableProfiling: widget.enableProfiling,
       );
 
@@ -169,32 +192,22 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
       }
 
-      texture = _renderer.targetTexture;
-
-      if (texture == null) {
-        throw Exception('Failed to create texture: texture is null');
-      }
-
-      textureId = texture!.textureId;
-
-      if (textureId < 0) {
-        throw Exception(
-          'Failed to create texture: invalid texture ID ($textureId)',
-        );
-      }
-
-      debugPrint('Successfully created texture with ID: $textureId');
-
       await _loadSplatDataFromAsset(widget.assetPath);
 
       if (!mounted) return;
-      setState(() {});
+      setState(() {
+        _isReady = true;
+      });
 
       // Initial render after setup
       _requestRender();
     } catch (e) {
       debugPrint('Failed to initialize renderer: $e');
-      rethrow;
+      if (!mounted) return;
+      setState(() {
+        _isReady = false;
+        _initError = e;
+      });
     }
   }
 
@@ -211,7 +224,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   }
 
   void _updateStats() {
-    if (!widget.showStats) return;
+    if (!mounted || !widget.showStats) return;
 
     final stats = _renderer.renderStats;
     final camera = _renderer.camera;
@@ -260,7 +273,7 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
   }
 
   void _handleScaleUpdate(ScaleUpdateDetails details) {
-    if (textureId < 0) return;
+    if (!_isReady) return;
 
     if (details.scale != 1.0) {
       final zoomDelta = (details.scale - 1.0) * -_kZoomSensitivity;
@@ -320,21 +333,29 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     _applyCameraFromSpherical();
   }
 
-  Future<void> _handleResize(Size newSize) async {
-    final size = _snap(newSize);
-    if (_renderer.currentSize == size) return;
+  Future<void> _handleResize(Size newSize, double dpr) async {
+    final logicalSize = _snap(newSize);
+    final renderSize = _physicalSize(logicalSize, dpr);
+    final current = _renderer.camera;
+    if (current != null &&
+        current.width == renderSize.width.toInt() &&
+        current.height == renderSize.height.toInt()) {
+      _logicalSize = logicalSize;
+      _lastDpr = dpr;
+      return;
+    }
 
-    final camera = _renderer.camera?.copyWithViewport(
-      newWidth: size.width,
-      newHeight: size.height,
+    final camera = current?.copyWithViewport(
+      newWidth: renderSize.width,
+      newHeight: renderSize.height,
     );
     if (camera == null) return;
 
     final changed = await _renderer.resize(camera);
     if (!changed) return;
 
-    texture = _renderer.targetTexture;
-    textureId = texture!.textureId;
+    _logicalSize = logicalSize;
+    _lastDpr = dpr;
     _requestRender();
   }
 
@@ -365,32 +386,50 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
   }
 
   Widget _buildLoadingState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const CircularProgressIndicator(),
-          const SizedBox(height: 16),
-          const Text('Initializing Gaussian Splatter...'),
-          if (_didInit) ...[
-            const SizedBox(height: 16),
-            const Text('Texture creation failed. Try again?'),
+    final error = _initError;
+    if (error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('Failed to initialize Gaussian Splatter.'),
             const SizedBox(height: 8),
+            Text(
+              '$error',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () {
-                setState(() {
-                  textureId = _kInvalidTextureId;
-                });
+                setState(_resetRendererForRetry);
               },
               child: const Text('Retry'),
             ),
           ],
+        ),
+      );
+    }
+
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('Initializing Gaussian Splatter...'),
         ],
       ),
     );
   }
 
-  Size _snap(Size s) => Size(s.width.floorToDouble(), s.height.floorToDouble());
+  Size _snap(Size s) => Size(s.width.roundToDouble(), s.height.roundToDouble());
+
+  Size _physicalSize(Size logicalSize, double dpr) {
+    return Size(
+      (logicalSize.width * dpr).roundToDouble(),
+      (logicalSize.height * dpr).roundToDouble(),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -401,15 +440,19 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
         // Snap once and use everywhere below
         final size = _snap(Size(constraints.maxWidth, constraints.maxHeight));
 
-        if (!_didInit && size.width > 0 && size.height > 0 && mounted) {
+        if (!_initStarted &&
+            _initError == null &&
+            size.width > 0 &&
+            size.height > 0 &&
+            mounted) {
           initPlatformState(size, dpr); // pass snapped size
         }
 
-        if (textureId < 0) return _buildLoadingState();
+        if (!_isReady) return _buildLoadingState();
 
         // Only resize when snapped size actually changed
-        if (_renderer.currentSize != size) {
-          unawaited(_handleResize(size));
+        if (_logicalSize != size || _lastDpr != dpr) {
+          unawaited(_handleResize(size, dpr));
         }
 
         return GestureDetector(
@@ -418,7 +461,7 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
           onScaleEnd: _handleScaleEnd,
           child: Stack(
             children: [
-              Texture(textureId: textureId),
+              _renderer.buildOutput(context, logicalSize: size),
               if (widget.showStats) _buildStatsOverlay(),
             ],
           ),

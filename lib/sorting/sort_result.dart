@@ -1,4 +1,3 @@
-
 import 'dart:typed_data';
 import 'package:vector_math/vector_math.dart';
 
@@ -16,6 +15,8 @@ class SortResult {
     required this.depthIndex,
     required this.viewProjection,
     required this.vertexCount,
+    this.generation = 0,
+    this.dataGeneration = 0,
   });
 
   /// Depth-sorted indices array.
@@ -26,4 +27,10 @@ class SortResult {
 
   /// Number of vertices that were sorted.
   final int vertexCount;
+
+  /// Renderer-assigned sort request generation.
+  final int generation;
+
+  /// Renderer-assigned splat data generation.
+  final int dataGeneration;
 }

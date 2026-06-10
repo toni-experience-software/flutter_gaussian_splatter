@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:ui';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' hide Matrix4;
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/constants.dart';
@@ -14,13 +15,15 @@ import 'package:flutter_gaussian_splatter/perf/disjoint_query_profiler.dart';
 import 'package:flutter_gaussian_splatter/perf/glfinish_sampler_profiler.dart';
 import 'package:flutter_gaussian_splatter/perf/perf_profiler.dart';
 import 'package:flutter_gaussian_splatter/perf/render_stats.dart';
+import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
 import 'package:flutter_gaussian_splatter/sorting/depth_sorter.dart' as depth;
+import 'package:flutter_gaussian_splatter/sorting/sort_result.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Renders Gaussian splats into an in‑memory [FlutterAngleTexture].
-class Renderer {
+class AngleSplatRenderer implements SplatRenderer {
   /// Creates a new TextureGaussianRenderer with the specified settings.
-  Renderer({this.disableAlphaWrite = false}) {
+  AngleSplatRenderer({this.disableAlphaWrite = false}) {
     _splatPass = SplatDrawPass(
       source: _splatSource,
       order: _orderTexSvc,
@@ -36,11 +39,7 @@ class Renderer {
   late final SplatSource _splatSource = SplatSource();
   late final OrderTexture _orderTexSvc = OrderTexture();
   late final depth.DepthSorterImpl _depthSorter = depth.DepthSorterImpl(
-    onSortComplete: (result) {
-      _orderTexSvc.uploadFull(_gl, result.depthIndex.toList(), caps: _caps);
-      // Update instancing count in the pass when order changes:
-      _splatPass.onSourceChanged();
-    },
+    onSortComplete: _handleSortComplete,
   );
   late final SplatDrawPass _splatPass;
 
@@ -68,6 +67,14 @@ class Renderer {
   String? _profilerType;
   bool _isResizing = false;
   PerfStats? _lastPerfStats;
+  bool _sortInFlight = false;
+  bool _sortPending = false;
+  Vector3? _lastSortedDirection;
+  Vector3? _lastSortedPosition;
+  Vector3? _inFlightSortDirection;
+  Vector3? _inFlightSortPosition;
+  int _sortGeneration = 0;
+  int _sortDataGeneration = 0;
 
   /// Optimization settings
   bool disableAlphaWrite;
@@ -75,6 +82,7 @@ class Renderer {
   // Public API
 
   /// Latest frame statistics with detailed performance profiling.
+  @override
   RenderStats get renderStats => RenderStats(
         fps: _lastPerfStats?.fps ?? 0.0,
         vertexCount: _splatSource.splatCount,
@@ -97,9 +105,11 @@ class Renderer {
         );
 
   /// The currently active [Camera], or `null` if not set.
+  @override
   Camera? get camera => _camera;
 
   /// Sets the active [Camera] and updates matrices.
+  @override
   set camera(Camera? camera) {
     if (camera == _camera) return;
     _camera = camera;
@@ -108,6 +118,7 @@ class Renderer {
   }
 
   /// Enables the background using an asset image.
+  @override
   Future<void> enableBackgroundFromAsset(String assetPath) async {
     _bg ??= SkyPass(assetPath: assetPath);
     await _bg!.init(_gl, caps: _caps);
@@ -123,6 +134,7 @@ class Renderer {
   }
 
   /// Sets the background rotation in degrees.
+  @override
   void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
     _bg?.setYawPitchDegrees(yawDegrees, pitchDegrees);
   }
@@ -131,6 +143,7 @@ class Renderer {
 
   /// Initializes ANGLE and the depth‑sorter. Must be called before any other
   /// method.
+  @override
   Future<void> initialize({bool debug = true}) async {
     _angle = FlutterAngle();
     await _angle.init(debug);
@@ -139,17 +152,18 @@ class Renderer {
 
   /// Creates a texture and compiles the shaders.  Safe to call multiple times –
   /// resources are recreated if needed.
-  Future<void> setupTexture({
-    required double width,
-    required double height,
+  @override
+  Future<void> setup({
+    required int width,
+    required int height,
     bool enableProfiling = false,
   }) async {
     assert(width > 0 && height > 0, 'Viewport must be non‑zero');
 
     _targetTexture = await _angle.createTexture(
       AngleOptions(
-        width: width.toInt(),
-        height: height.toInt(),
+        width: width,
+        height: height,
         dpr: 1,
         alpha: true,
         useSurfaceProducer: true,
@@ -170,6 +184,7 @@ class Renderer {
   }
 
   /// Drives a single frame.  Call from a `Ticker` / `SchedulerBinding`.
+  @override
   Future<void> frame() async {
     // Bail during resize/context swap
     if (_isResizing || _inFrame) return;
@@ -181,12 +196,9 @@ class Renderer {
     try {
       _perf?.beginFrame();
 
-      // Always sort immediately when rendering
-      if (_splatBuffer != null && _splatCount > 0) {
-        final vp = _projectionMatrix.multiplied(_viewMatrix);
-        _depthSorter.runSort(vp, _splatBuffer!, _splatCount);
-      }
+      _requestSort();
 
+      _targetTexture.activate();
       _perf?.markGpuBegin(_gl);
 
       _gl
@@ -214,6 +226,7 @@ class Renderer {
       _perf?.markGpuEnd(_gl);
 
       _lastPerfStats = _perf?.endFrame(_gl);
+      await _targetTexture.signalNewFrameAvailable();
     } catch (_) {
       // Recovery path on GL/Program invalidation
       await _recoverFromContextLoss();
@@ -225,6 +238,7 @@ class Renderer {
   /// Supplies raw splat data (32 bytes per splat) and rebuilds the GPU texture.
   /// Returns a future that completes when the initial sort finishes.
   /// Throws [ArgumentError] if the buffer length is not a multiple of 32.
+  @override
   Future<void> setSplatData(Uint8List data) async {
     if (data.length % GsConst.bytesPerSplat != 0) {
       throw ArgumentError.value(
@@ -236,6 +250,8 @@ class Renderer {
     _splatBuffer = data;
     _splatSource.upload(_gl, data);
     _splatCount = _splatSource.splatCount;
+    _sortDataGeneration++;
+    _depthSorter.setSplatData(data, _splatCount);
 
     // Update the draw pass instance count
     _splatPass.onSourceChanged();
@@ -243,12 +259,11 @@ class Renderer {
     // Initial unsorted order (sequential), then request an immediate sort.
     _orderTexSvc.uploadFull(
       _gl,
-      List<int>.generate(_splatCount, (i) => i),
+      _sequentialOrder(_splatCount),
       caps: _caps,
     );
     if (_camera != null) {
-      final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _depthSorter.runSort(vp, data, _splatCount);
+      _requestSort(force: true);
       // Wait for the first sort to complete
       await _depthSorter.firstSortComplete;
     }
@@ -258,6 +273,7 @@ class Renderer {
   /// to preserve the current field-of-view.
   ///
   /// Returns `true` if the texture actually resized (and we updated matrices).
+  @override
   Future<bool> resize(Camera nextCamera) async {
     if (_isResizing) return false;
 
@@ -289,6 +305,7 @@ class Renderer {
 
       _updateProjectionMatrix();
       _updateViewMatrix();
+      _requestSort(force: true);
       return true;
     } finally {
       _isResizing = false;
@@ -322,6 +339,97 @@ class Renderer {
     _viewMatrix = _camera!.viewMatrix();
   }
 
+  void _requestSort({bool force = false}) {
+    final camera = _camera;
+    if (_splatBuffer == null || _splatCount <= 0 || camera == null) return;
+
+    if (!force && !_shouldSortForCamera()) return;
+
+    if (_sortInFlight) {
+      _sortPending = true;
+      return;
+    }
+
+    final direction = _viewDirectionFor(camera);
+    final position = camera.position.clone();
+    final generation = ++_sortGeneration;
+    _sortInFlight = true;
+    _inFlightSortDirection = direction;
+    _inFlightSortPosition = position;
+    final vp = _projectionMatrix.multiplied(_viewMatrix);
+    try {
+      _depthSorter.runSort(
+        vp,
+        generation: generation,
+        dataGeneration: _sortDataGeneration,
+      );
+    } catch (_) {
+      _clearSortInFlight();
+      rethrow;
+    }
+  }
+
+  void _handleSortComplete(SortResult result) {
+    final sortedDirection = _inFlightSortDirection;
+    final sortedPosition = _inFlightSortPosition;
+    _clearSortInFlight();
+
+    final camera = _camera;
+    final canApply = camera != null &&
+        sortedDirection != null &&
+        sortedPosition != null &&
+        result.generation == _sortGeneration &&
+        result.dataGeneration == _sortDataGeneration;
+
+    if (canApply) {
+      _lastSortedDirection = sortedDirection;
+      _lastSortedPosition = sortedPosition;
+      _orderTexSvc.uploadFull(_gl, result.depthIndex, caps: _caps);
+      // Update instancing count in the pass when order changes:
+      _splatPass.onSourceChanged();
+
+      if (_shouldSortForCamera()) {
+        _sortPending = true;
+      }
+    }
+
+    if (_sortPending) {
+      _sortPending = false;
+      _requestSort(force: true);
+    }
+  }
+
+  void _clearSortInFlight() {
+    _sortInFlight = false;
+    _inFlightSortDirection = null;
+    _inFlightSortPosition = null;
+  }
+
+  bool _shouldSortForCamera() {
+    final camera = _camera;
+    if (camera == null) return false;
+
+    final currentDirection = _viewDirectionFor(camera);
+    final lastDirection = _lastSortedDirection;
+    if (lastDirection == null) return true;
+    if (currentDirection.dot(lastDirection) < 0.999) return true;
+
+    final currentPosition = camera.position;
+    final lastPosition = _lastSortedPosition;
+    if (lastPosition == null) return true;
+
+    return (currentPosition - lastPosition).length2 > 0.0001;
+  }
+
+  Vector3 _viewDirectionFor(Camera camera) {
+    final rotation = camera.rotation;
+    return Vector3(
+      rotation.entry(0, 2),
+      rotation.entry(1, 2),
+      rotation.entry(2, 2),
+    ).normalized();
+  }
+
   // Profiler helpers
   void _initProfilerIfEnabled() {
     if (_profilerType == null) {
@@ -344,6 +452,9 @@ class Renderer {
 
   // Context‑loss recovery
   Future<void> _recoverFromContextLoss() async {
+    _clearSortInFlight();
+    _sortPending = false;
+
     // Rebuild GPU state; if this fails once,
     // leave things null and let next frame retry.
     try {
@@ -367,11 +478,11 @@ class Renderer {
       _splatSource.upload(_gl, _splatBuffer!);
       _orderTexSvc.uploadFull(
         _gl,
-        List<int>.generate(_splatCount, (i) => i),
+        _sequentialOrder(_splatCount),
         caps: _caps,
       );
-      final vp = _projectionMatrix.multiplied(_viewMatrix);
-      _depthSorter.runSort(vp, _splatBuffer!, _splatCount);
+      _depthSorter.setSplatData(_splatBuffer!, _splatCount);
+      _requestSort(force: true);
     }
 
     // Recreate background with new context if previously enabled
@@ -389,7 +500,16 @@ class Renderer {
     }
   }
 
+  Uint32List _sequentialOrder(int count) {
+    final order = Uint32List(count);
+    for (var i = 0; i < count; i++) {
+      order[i] = i;
+    }
+    return order;
+  }
+
   /// Disposes *all* resources. The instance must not be used afterwards.
+  @override
   void dispose() {
     _bg?.dispose(_gl);
     _splatPass.dispose(_gl);
@@ -405,4 +525,17 @@ class Renderer {
 
     _disposeProfilerQuietly();
   }
+
+  @override
+  Widget buildOutput(BuildContext context, {required Size logicalSize}) {
+    return SizedBox(
+      width: logicalSize.width,
+      height: logicalSize.height,
+      child: Texture(textureId: _targetTexture.textureId),
+    );
+  }
 }
+
+/// Backward-compatible name for [AngleSplatRenderer].
+@Deprecated('Use AngleSplatRenderer instead.')
+typedef Renderer = AngleSplatRenderer;

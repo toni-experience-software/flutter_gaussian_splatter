@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/constants.dart';
 import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
@@ -32,7 +34,7 @@ class OrderTexture {
   /// additional headroom to minimize future reallocations.
   ///
   /// Returns immediately if [indices] is empty.
-  void uploadFull(RenderingContext gl, List<int> indices, {Caps? caps}) {
+  void uploadFull(RenderingContext gl, Uint32List indices, {Caps? caps}) {
     if (indices.isEmpty) return;
     if (texture == null) {
       // decide once when we first allocate
@@ -48,20 +50,35 @@ class OrderTexture {
 
     final totalTexels = neededRows * width;
     if (_useR32UI) {
-      final u32 = Uint32Array(totalTexels); // zero-initialized
-      for (var i = 0; i < indices.length; ++i) {
-        u32[i] = indices[i];
-      }
-      gl.texSubImage2D(WebGL.TEXTURE_2D, 0, 0, 0, width, neededRows,
-          WebGL.RED_INTEGER, WebGL.UNSIGNED_INT, u32,);
+      final u32 = Uint32Array(totalTexels)..set(indices);
+      gl.texSubImage2D(
+        WebGL.TEXTURE_2D,
+        0,
+        0,
+        0,
+        width,
+        neededRows,
+        WebGL.RED_INTEGER,
+        WebGL.UNSIGNED_INT,
+        u32,
+      );
     } else {
       // pack into R channel of RGBA32F
       final f32 = Float32Array(totalTexels * 4); // zero-initialized
       for (var i = 0; i < indices.length; ++i) {
         f32[i * 4] = indices[i].toDouble();
       }
-      gl.texSubImage2D(WebGL.TEXTURE_2D, 0, 0, 0, width, neededRows, WebGL.RGBA,
-          WebGL.FLOAT, f32,);
+      gl.texSubImage2D(
+        WebGL.TEXTURE_2D,
+        0,
+        0,
+        0,
+        width,
+        neededRows,
+        WebGL.RGBA,
+        WebGL.FLOAT,
+        f32,
+      );
     }
     height = neededRows;
   }
@@ -91,20 +108,27 @@ class OrderTexture {
     gl
       ..bindTexture(WebGL.TEXTURE_2D, texture)
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_S, WebGL.CLAMP_TO_EDGE,)
+        WebGL.TEXTURE_2D,
+        WebGL.TEXTURE_WRAP_S,
+        WebGL.CLAMP_TO_EDGE,
+      )
       ..texParameteri(
-          WebGL.TEXTURE_2D, WebGL.TEXTURE_WRAP_T, WebGL.CLAMP_TO_EDGE,)
+        WebGL.TEXTURE_2D,
+        WebGL.TEXTURE_WRAP_T,
+        WebGL.CLAMP_TO_EDGE,
+      )
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MIN_FILTER, WebGL.NEAREST)
       ..texParameteri(WebGL.TEXTURE_2D, WebGL.TEXTURE_MAG_FILTER, WebGL.NEAREST)
       ..texImage2D(
-          WebGL.TEXTURE_2D,
-          0,
-          _useR32UI ? WebGL.R32UI : WebGL.RGBA32F,
-          width,
-          rows,
-          0,
-          _useR32UI ? WebGL.RED_INTEGER : WebGL.RGBA,
-          _useR32UI ? WebGL.UNSIGNED_INT : WebGL.FLOAT,
-          null,);
+        WebGL.TEXTURE_2D,
+        0,
+        _useR32UI ? WebGL.R32UI : WebGL.RGBA32F,
+        width,
+        rows,
+        0,
+        _useR32UI ? WebGL.RED_INTEGER : WebGL.RGBA,
+        _useR32UI ? WebGL.UNSIGNED_INT : WebGL.FLOAT,
+        null,
+      );
   }
 }

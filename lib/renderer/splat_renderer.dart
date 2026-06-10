@@ -33,6 +33,12 @@ abstract interface class SplatRenderer {
   /// Latest frame statistics.
   RenderStats get renderStats;
 
+  /// Callback invoked when another frame should be scheduled.
+  VoidCallback? get onNeedsRender;
+
+  /// Called when asynchronous renderer work means another frame should render.
+  set onNeedsRender(VoidCallback? callback);
+
   /// Enables a renderer-managed background from an asset.
   Future<void> enableBackgroundFromAsset(String assetPath);
 

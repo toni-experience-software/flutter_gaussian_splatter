@@ -1,0 +1,10 @@
+{
+  "SplatVertex": {
+    "type": "vertex",
+    "file": "shaders/gpu/splat.vert"
+  },
+  "SplatFragment": {
+    "type": "fragment",
+    "file": "shaders/gpu/splat.frag"
+  }
+}

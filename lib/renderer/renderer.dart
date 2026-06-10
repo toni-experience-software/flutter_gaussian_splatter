@@ -75,6 +75,7 @@ class AngleSplatRenderer implements SplatRenderer {
   Vector3? _inFlightSortPosition;
   int _sortGeneration = 0;
   int _sortDataGeneration = 0;
+  VoidCallback? _onNeedsRender;
 
   /// Optimization settings
   bool disableAlphaWrite;
@@ -95,6 +96,14 @@ class AngleSplatRenderer implements SplatRenderer {
   /// The texture that can be composed into UI using [FlutterAngleTexture]
   /// widget helpers.
   FlutterAngleTexture get targetTexture => _targetTexture;
+
+  @override
+  VoidCallback? get onNeedsRender => _onNeedsRender;
+
+  @override
+  set onNeedsRender(VoidCallback? callback) {
+    _onNeedsRender = callback;
+  }
 
   /// Current viewport size that the renderer is configured for.
   Size? get currentSize => _camera == null
@@ -387,6 +396,7 @@ class AngleSplatRenderer implements SplatRenderer {
       _orderTexSvc.uploadFull(_gl, result.depthIndex, caps: _caps);
       // Update instancing count in the pass when order changes:
       _splatPass.onSourceChanged();
+      _onNeedsRender?.call();
 
       if (_shouldSortForCamera()) {
         _sortPending = true;

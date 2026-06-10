@@ -95,6 +95,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   void initState() {
     super.initState();
     _renderer = _createRenderer();
+    _renderer.onNeedsRender = _requestRender;
   }
 
   SplatRenderer _createRenderer() {
@@ -111,6 +112,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       } catch (_) {}
     }
     _renderer = _createRenderer();
+    _renderer.onNeedsRender = _requestRender;
     _isReady = false;
     _initStarted = false;
     _initError = null;
@@ -128,6 +130,10 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       _frameInFlight = true;
       try {
         await _renderer.frame();
+
+        if (mounted) {
+          setState(() {});
+        }
 
         if (mounted && widget.showStats) {
           _updateStats();

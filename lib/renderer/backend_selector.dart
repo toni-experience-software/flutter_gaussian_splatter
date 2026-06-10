@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_gaussian_splatter/renderer/gpu/flutter_gpu_splat_renderer.dart';
 import 'package:flutter_gaussian_splatter/renderer/renderer.dart';
 import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
+import 'package:flutter_gpu/gpu.dart' as gpu;
 
 /// Available renderer backends.
 enum SplatBackend {
@@ -21,15 +23,18 @@ SplatRenderer createRenderer(
 }) {
   switch (choice) {
     case SplatBackend.flutterGpu:
-      throw UnimplementedError(
-        'The flutter_gpu backend is not implemented yet.',
-      );
+      return FlutterGpuSplatRenderer();
     case SplatBackend.angle:
       return AngleSplatRenderer(disableAlphaWrite: disableAlphaWrite);
     case SplatBackend.auto:
-      // TODO(phase2): Probe flutter_gpu here and fall back to ANGLE on failure.
       if (kIsWeb) {
         return AngleSplatRenderer(disableAlphaWrite: disableAlphaWrite);
+      }
+      try {
+        gpu.gpuContext.defaultColorFormat;
+        return FlutterGpuSplatRenderer();
+      } catch (error) {
+        debugPrint('flutter_gpu unavailable; falling back to ANGLE: $error');
       }
       return AngleSplatRenderer(disableAlphaWrite: disableAlphaWrite);
   }

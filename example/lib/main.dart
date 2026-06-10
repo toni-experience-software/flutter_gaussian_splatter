@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_gaussian_splatter/renderer/backend_selector.dart';
 import 'package:flutter_gaussian_splatter/widgets/gaussian_splatter_widget.dart';
 
 void main() {
@@ -47,9 +48,10 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
             key: _splatterKey,
             assetPath: 'assets/toycar.ply',
             disableAlphaWrite: false,
-            backgroundAssetPath: 'assets/sky.jpg',
-            showStats: _showStats,
-            enableProfiling: true,
+            // backgroundAssetPath: 'assets/sky.jpg',
+            // showStats: _showStats,
+            enableProfiling: false,
+            backend: SplatBackend.flutterGpu,
           ),
           // Background rotation controls
           Positioned(

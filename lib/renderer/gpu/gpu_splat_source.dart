@@ -50,6 +50,10 @@ class GpuSplatSource {
       GsConst.splatsPerRow * _floatTexelsPerSplat;
   static const int _shTexelsPerSplat = 12;
 
+  /// Smallest guaranteed Metal/Vulkan 2D texture dimension limit; Impeller
+  /// rejects anything larger (impeller/core/allocator.cc).
+  static const int _maxTextureDimension = 16384;
+
   /// Uploads raw 128-byte-per-splat data into the flutter_gpu atlas.
   void uploadSplats(Uint8List buffer) {
     assert(
@@ -61,14 +65,25 @@ class GpuSplatSource {
     final height = ((_floatTexelsPerSplat * count) / _floatAtlasWidth).ceil();
     final sidecarHeight =
         (count + GsConst.splatsPerRow - 1) ~/ GsConst.splatsPerRow;
-    final shHeight =
-        ((count * _shTexelsPerSplat) / GsConst.splatsPerRow).ceil();
+    // The SH texture is 12 texels wide per splat (512 * 12 = 6144 columns) so
+    // every texture shares the same one-row-per-512-splats height. Packing 12
+    // texels per splat linearly into a 512-wide texture instead would grow 12x
+    // taller and blow Metal's 16384 dimension cap at ~700K splats.
+    final shHeight = sidecarHeight;
+    if (sidecarHeight > _maxTextureDimension) {
+      throw ArgumentError(
+        'Splat count $count exceeds the maximum supported '
+        '${_maxTextureDimension * GsConst.splatsPerRow} splats '
+        '(sidecar texture height $sidecarHeight > $_maxTextureDimension).',
+      );
+    }
     final neededBytes = _floatAtlasWidth * height * GsConst.bytesPerTexel;
     final scratch = _ensureAtlasScratch(neededBytes);
     final sidecarNeededBytes = sidecarHeight * GsConst.splatsPerRow * 4;
     final quatBytes = _ensureQuatScratch(sidecarNeededBytes);
     final colorBytes = _ensureColorScratch(sidecarNeededBytes);
-    final shNeededBytes = shHeight * GsConst.splatsPerRow * 4;
+    final shNeededBytes =
+        shHeight * GsConst.splatsPerRow * _shTexelsPerSplat * 4;
     final shBytes = _ensureShScratch(shNeededBytes);
 
     final srcF32 = Float32List.view(buffer.buffer);
@@ -164,7 +179,7 @@ class GpuSplatSource {
     if (shTexture == null || _shHeight != shHeight) {
       shTexture = gpu.gpuContext.createTexture(
         gpu.StorageMode.hostVisible,
-        GsConst.splatsPerRow,
+        GsConst.splatsPerRow * _shTexelsPerSplat,
         shHeight,
         enableRenderTargetUsage: false,
       );

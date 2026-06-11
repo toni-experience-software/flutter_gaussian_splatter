@@ -51,11 +51,13 @@ vec4 fetchSidecar(sampler2D source, float idx) {
 }
 
 vec4 fetchSH(float idx, float coefficientGroup) {
-    float shIndex = idx * 12.0 + coefficientGroup;
+    // 6144-wide layout: 12 adjacent texels per splat, 512 splats per row, so
+    // the height matches the other sidecars (a 512-wide linear layout grows
+    // 12x taller and exceeds the 16384 texture dimension cap at ~700K splats).
     return fetchTexel(
         u_sh_texture,
-        vec2(mod(shIndex, 512.0), floor(shIndex / 512.0)),
-        vec2(512.0, frame_info.sh_height));
+        vec2(mod(idx, 512.0) * 12.0 + coefficientGroup, floor(idx / 512.0)),
+        vec2(6144.0, frame_info.sh_height));
 }
 
 float decodeOrder(vec4 orderTexel) {

@@ -31,11 +31,12 @@ vec4 fetchSidecar(sampler2D source, float idx) {
 }
 
 vec4 fetchSH(float idx, float coefficientGroup) {
-    float shIndex = idx * 12.0 + coefficientGroup;
+    // 6144-wide layout: 12 adjacent texels per splat, 512 splats per row —
+    // must match fetchSH in splat.vert and the packing in gpu_splat_source.
     return fetchTexel(
         u_sh_texture,
-        vec2(mod(shIndex, 512.0), floor(shIndex / 512.0)),
-        vec2(512.0, resolve_info.sh_height));
+        vec2(mod(idx, 512.0) * 12.0 + coefficientGroup, floor(idx / 512.0)),
+        vec2(6144.0, resolve_info.sh_height));
 }
 
 vec4 unpackSH(vec4 packed) {

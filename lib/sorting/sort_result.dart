@@ -15,9 +15,10 @@ class SortResult {
     required this.depthIndex,
     required this.viewProjection,
     required this.vertexCount,
+    int? visibleCount,
     this.generation = 0,
     this.dataGeneration = 0,
-  });
+  }) : visibleCount = visibleCount ?? vertexCount;
 
   /// Depth-sorted indices array.
   final Uint32List depthIndex;
@@ -27,6 +28,11 @@ class SortResult {
 
   /// Number of vertices that were sorted.
   final int vertexCount;
+
+  /// Number of splats in front of the camera, occupying the prefix
+  /// `[0, visibleCount)` of [depthIndex]. Behind-camera splats land in the
+  /// tail and can be skipped at draw time. Defaults to [vertexCount].
+  final int visibleCount;
 
   /// Renderer-assigned sort request generation.
   final int generation;

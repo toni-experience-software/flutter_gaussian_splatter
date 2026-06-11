@@ -27,6 +27,7 @@ class GaussianSplatterWidget extends StatefulWidget {
     super.key,
     this.showStats = false,
     this.enableProfiling = false,
+    this.highQualitySH = false,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -42,6 +43,11 @@ class GaussianSplatterWidget extends StatefulWidget {
 
   /// Path to the asset containing the background image.
   final String? backgroundAssetPath;
+
+  /// When true, evaluate spherical harmonics per-splat every frame for maximum
+  /// view-dependent fidelity. When false (default), use the cheaper resolve
+  /// approximation with a single global view direction.
+  final bool highQualitySH;
 
   @override
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
@@ -182,6 +188,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       );
 
       _renderer.camera = camera;
+      _renderer.highQualitySH = widget.highQualitySH;
       // Re-pose through the orbit path so frame 0 matches post-drag math.
       _applyCameraFromSpherical();
       if (widget.backgroundAssetPath != null) {

@@ -44,6 +44,7 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
             color: Colors.green,
           )),
           GaussianSplatterWidget(
+            highQualitySH:false,
             key: _splatterKey,
             assetPath: 'assets/toycar.ply',
             backgroundAssetPath: 'assets/sky.jpg',

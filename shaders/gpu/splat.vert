@@ -11,6 +11,7 @@ uniform FrameInfo {
   float order_height;
   float sidecar_height;
   float sh_height;
+  float use_resolved;
 } frame_info;
 
 uniform BatchInfo {
@@ -22,6 +23,7 @@ uniform sampler2D u_order_texture;
 uniform sampler2D u_quat_texture;
 uniform sampler2D u_color_texture;
 uniform sampler2D u_sh_texture;
+uniform sampler2D u_resolved_texture;
 
 in vec3 position;
 
@@ -179,6 +181,13 @@ void main() {
     vec4 quat = decodeQuaternion(fetchSidecar(u_quat_texture, idx));
     vec4 base_color_srgb = fetchSidecar(u_color_texture, idx);
 
+    // Vertex-stage alpha discard: skip near-transparent splats before any
+    // covariance/SH work (PlayCanvas vert/gsplat.js:89).
+    if (base_color_srgb.a <= 1.0 / 255.0) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+
     vec3 worldPos = p0_data.xyz;
     vec3 scale = p1_data.xyz;
 
@@ -230,14 +239,13 @@ void main() {
         return;
     }
 
-    if (max(s1, s2) > frame_info.max_splat_size) {
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        return;
-    }
-
+    // Clamp kernel axes to min(1024, viewport) instead of culling oversized
+    // splats — fixes splat dropout when zooming in close while keeping the
+    // same overdraw protection (PlayCanvas gsplatCorner.js:86).
+    float axisClamp = min(1024.0, max(frame_info.viewport.x, frame_info.viewport.y));
     vec2 diagVec = normalize(vec2(od, l1 - d1));
-    vec2 majorAxis = min(s1, 1024.0) * 2.0 * diagVec;
-    vec2 minorAxis = min(s2, 1024.0) * 2.0 * vec2(diagVec.y, -diagVec.x);
+    vec2 majorAxis = min(s1, axisClamp) * 2.0 * diagVec;
+    vec2 minorAxis = min(s2, axisClamp) * 2.0 * vec2(diagVec.y, -diagVec.x);
 
     vec2 c = pos2d.ww / frame_info.viewport;
     float margin = 2.0;
@@ -247,15 +255,22 @@ void main() {
         return;
     }
 
-    vec3 base_color_linear = base_color_srgb.rgb;
-    vec3 sh[15];
-    float shScale;
-    readSHData_reference(idx, sh, shScale);
+    vec3 final_srgb_rgb;
+    if (frame_info.use_resolved > 0.5) {
+        // Resolved path: one fetch of the precomputed per-splat color, skipping
+        // the 12 SH fetches + evaluation entirely.
+        final_srgb_rgb = fetchSidecar(u_resolved_texture, idx).rgb;
+    } else {
+        vec3 base_color_linear = base_color_srgb.rgb;
+        vec3 sh[15];
+        float shScale;
+        readSHData_reference(idx, sh, shScale);
 
-    vec3 dir_sh = normalize((cam_view_space.xyz / cam_view_space.w) * mat3(frame_info.view));
-    vec3 sh_lighting = evalSH_reference(dir_sh, sh);
-    vec3 sum_linear = base_color_linear + sh_lighting;
-    vec3 final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0)));
+        vec3 dir_sh = normalize((cam_view_space.xyz / cam_view_space.w) * mat3(frame_info.view));
+        vec3 sh_lighting = evalSH_reference(dir_sh, sh);
+        vec3 sum_linear = base_color_linear + sh_lighting;
+        final_srgb_rgb = prepareOutputFromGamma(max(sum_linear, vec3(0.0)));
+    }
 
     clipCorner(majorAxis, minorAxis, corner_uv, base_color_srgb.a);
 

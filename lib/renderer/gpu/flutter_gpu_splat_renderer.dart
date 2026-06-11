@@ -36,6 +36,12 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   late gpu.UniformSlot _shSlot;
   late gpu.UniformSlot _skyInfoSlot;
   late gpu.UniformSlot _skyBgSlot;
+  late gpu.Shader _shResolveFragmentShader;
+  late gpu.RenderPipeline _shResolvePipeline;
+  late gpu.UniformSlot _shResolveInfoSlot;
+  late gpu.UniformSlot _shResolveShSlot;
+  late gpu.UniformSlot _shResolveColorSlot;
+  late gpu.UniformSlot _resolvedSlot;
 
   static final gpu.SamplerOptions _nearestSampler = gpu.SamplerOptions();
   static final gpu.SamplerOptions _linearSampler = gpu.SamplerOptions(
@@ -66,6 +72,14 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   vm.Vector3? _inFlightSortPosition;
   int _sortGeneration = 0;
   int _sortDataGeneration = 0;
+  int _visibleCount = -1;
+
+  gpu.Texture? _resolvedColorTexture;
+  int _resolvedHeight = 0;
+  bool _highQualitySH = false;
+  bool _resolveDataDirty = true;
+  bool _resolvedActive = false;
+  vm.Vector3? _lastResolvedDirection;
   VoidCallback? _onNeedsRender;
   vm.Matrix4 _backgroundRotation = vm.Matrix4.identity();
 
@@ -84,6 +98,19 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   /// render-to-texture path needs a single sign on every platform.
   @override
   double get ndcYSign => 1;
+
+  @override
+  bool get highQualitySH => _highQualitySH;
+
+  @override
+  set highQualitySH(bool value) {
+    if (value == _highQualitySH) return;
+    _highQualitySH = value;
+    // Re-enabling the approximation must recompute resolved colors.
+    _resolveDataDirty = true;
+    _lastResolvedDirection = null;
+    _onNeedsRender?.call();
+  }
 
   @override
   Camera? get camera => _camera;
@@ -149,6 +176,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _quatSlot = _vertexShader.getUniformSlot('u_quat_texture');
     _colorSlot = _vertexShader.getUniformSlot('u_color_texture');
     _shSlot = _vertexShader.getUniformSlot('u_sh_texture');
+    _resolvedSlot = _vertexShader.getUniformSlot('u_resolved_texture');
     _frameUniforms = gpu.gpuContext.createHostBuffer();
     _quadVertexBuffer =
         gpu.gpuContext.createDeviceBufferWithCopy(_buildQuadVertexData());
@@ -162,6 +190,19 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _skyBgSlot = _skyFragmentShader.getUniformSlot('u_bg');
     _skyVertexBuffer =
         gpu.gpuContext.createDeviceBufferWithCopy(_buildSkyVertexData());
+
+    // SH resolve pass reuses the fullscreen-triangle SkyVertex shader.
+    _shResolveFragmentShader = library['ShResolveFragment']!;
+    _shResolvePipeline = gpu.gpuContext.createRenderPipeline(
+      _skyVertexShader,
+      _shResolveFragmentShader,
+    );
+    _shResolveInfoSlot =
+        _shResolveFragmentShader.getUniformSlot('ShResolveInfo');
+    _shResolveShSlot = _shResolveFragmentShader.getUniformSlot('u_sh_texture');
+    _shResolveColorSlot =
+        _shResolveFragmentShader.getUniformSlot('u_color_texture');
+
     _target = _createTarget(width, height);
   }
 
@@ -198,6 +239,9 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     }
 
     _splatBuffer = data;
+    _visibleCount = -1; // draw all until the first sort for this data lands
+    _resolveDataDirty = true; // resolved SH colors must be recomputed
+    _lastResolvedDirection = null;
     _source.uploadSplats(data);
     _sortDataGeneration++;
     _depthSorter.setSplatData(data, _source.splatCount);
@@ -234,6 +278,57 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     try {
       _requestSort();
       _frameUniforms.reset();
+
+      // SH resolve pass: evaluate per-splat SH colors into a texture the splat
+      // pass samples once, instead of 12 SH fetches + eval per vertex. It runs
+      // on its own command buffer (submitted first) because flutter_gpu allows
+      // only one render pass to encode per command buffer at a time.
+      _resolvedActive = false;
+      if (hasSplats && !_highQualitySH) {
+        _ensureResolvedTexture();
+        if (_shouldResolveNow()) {
+          final resolveBuffer = gpu.gpuContext.createCommandBuffer();
+          resolveBuffer
+              .createRenderPass(
+                gpu.RenderTarget.singleColor(
+                  gpu.ColorAttachment(
+                    texture: _resolvedColorTexture!,
+                    clearValue: vm.Vector4(0, 0, 0, 0),
+                  ),
+                ),
+              )
+            ..setViewport(
+              gpu.Viewport(width: 512, height: _resolvedHeight),
+            )
+            ..setDepthWriteEnable(false)
+            ..setColorBlendEnable(false)
+            ..setCullMode(gpu.CullMode.none)
+            ..bindPipeline(_shResolvePipeline)
+            ..bindUniform(
+              _shResolveInfoSlot,
+              _frameUniforms.emplace(_packShResolveInfo()),
+            )
+            ..bindTexture(_shResolveShSlot, shTexture, sampler: _nearestSampler)
+            ..bindTexture(
+              _shResolveColorSlot,
+              colorTexture,
+              sampler: _nearestSampler,
+            )
+            ..bindVertexBuffer(
+              gpu.BufferView(
+                _skyVertexBuffer,
+                offsetInBytes: 0,
+                lengthInBytes: _skyVertexBufferBytes,
+              ),
+              _skyVertexCount,
+            )
+            ..draw();
+          resolveBuffer.submit();
+          _lastResolvedDirection = _viewDirectionFor(_camera!);
+          _resolveDataDirty = false;
+        }
+        _resolvedActive = _resolvedColorTexture != null;
+      }
 
       final commandBuffer = gpu.gpuContext.createCommandBuffer();
       final renderPass = commandBuffer.createRenderPass(
@@ -282,11 +377,23 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
           ..bindTexture(_orderSlot, orderTexture, sampler: _nearestSampler)
           ..bindTexture(_quatSlot, quatTexture, sampler: _nearestSampler)
           ..bindTexture(_colorSlot, colorTexture, sampler: _nearestSampler)
-          ..bindTexture(_shSlot, shTexture, sampler: _nearestSampler);
+          ..bindTexture(_shSlot, shTexture, sampler: _nearestSampler)
+          // u_resolved_texture must always be bound; when high-quality SH is
+          // active it goes unsampled, so the color texture stands in for it.
+          ..bindTexture(
+            _resolvedSlot,
+            _resolvedActive ? _resolvedColorTexture! : colorTexture,
+            sampler: _nearestSampler,
+          );
+        // Skip behind-camera splats, which the sorter parks in the order tail.
+        final fullCount = _source.splatCount;
+        final drawCount = _visibleCount < 0
+            ? fullCount
+            : (_visibleCount < fullCount ? _visibleCount : fullCount);
         for (var baseSplat = 0;
-            baseSplat < _source.splatCount;
+            baseSplat < drawCount;
             baseSplat += _splatsPerBatch) {
-          final remaining = _source.splatCount - baseSplat;
+          final remaining = drawCount - baseSplat;
           final splatsInBatch =
               remaining < _splatsPerBatch ? remaining : _splatsPerBatch;
           renderPass
@@ -396,6 +503,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _source.dispose();
     _depthSorter.dispose();
     _backgroundTexture = null;
+    _resolvedColorTexture = null;
   }
 
   gpu.Texture _createTarget(int width, int height) {
@@ -502,7 +610,69 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       Endian.host,
     );
 
+    final useResolvedOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('use_resolved') ?? 168;
+    data.setFloat32(
+      useResolvedOffset,
+      _resolvedActive ? 1.0 : 0.0,
+      Endian.host,
+    );
+
     return data;
+  }
+
+  ByteData _packShResolveInfo() {
+    final size = _shResolveInfoSlot.sizeInBytes ?? 32;
+    final data = ByteData(size);
+
+    final dir = _viewDirectionFor(_camera!);
+    final dirOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('view_dir') ?? 0;
+    data
+      ..setFloat32(dirOffset, dir.x, Endian.host)
+      ..setFloat32(dirOffset + 4, dir.y, Endian.host)
+      ..setFloat32(dirOffset + 8, dir.z, Endian.host);
+
+    final countOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('splat_count') ?? 12;
+    data.setFloat32(countOffset, _source.splatCount.toDouble(), Endian.host);
+
+    final shHeightOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('sh_height') ?? 16;
+    data.setFloat32(shHeightOffset, _source.shHeight.toDouble(), Endian.host);
+
+    final sidecarHeightOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('sidecar_height') ?? 20;
+    data.setFloat32(
+      sidecarHeightOffset,
+      _source.sidecarHeight.toDouble(),
+      Endian.host,
+    );
+
+    return data;
+  }
+
+  void _ensureResolvedTexture() {
+    final height = _source.sidecarHeight;
+    if (height <= 0) return;
+    if (_resolvedColorTexture == null || _resolvedHeight != height) {
+      _resolvedColorTexture = gpu.gpuContext.createTexture(
+        gpu.StorageMode.devicePrivate,
+        512,
+        height,
+      );
+      _resolvedHeight = height;
+      _resolveDataDirty = true; // freshly allocated → must be filled
+    }
+  }
+
+  bool _shouldResolveNow() {
+    if (_resolvedColorTexture == null) return false;
+    if (_resolveDataDirty) return true;
+    final last = _lastResolvedDirection;
+    if (last == null) return true;
+    // SH varies slowly with direction, so a coarser threshold than the sort's.
+    return _viewDirectionFor(_camera!).dot(last) < 0.999;
   }
 
   ByteData _packBatchInfo(int baseSplat) {
@@ -637,6 +807,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     if (canApply) {
       _lastSortedDirection = sortedDirection;
       _lastSortedPosition = sortedPosition;
+      _visibleCount = result.visibleCount;
       _source.uploadOrder(result.depthIndex);
       _onNeedsRender?.call();
 

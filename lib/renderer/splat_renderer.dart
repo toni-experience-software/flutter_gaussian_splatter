@@ -21,6 +21,12 @@ abstract interface class SplatRenderer {
   /// Uploads raw processed splat data.
   Future<void> setSplatData(Uint8List data);
 
+  /// When true, evaluate spherical harmonics per-splat every frame (highest
+  /// quality). When false, use the cheaper resolve-pass approximation that
+  /// evaluates SH once per splat with a single global view direction.
+  bool get highQualitySH;
+  set highQualitySH(bool value);
+
   /// NDC Y-axis sign this backend's render target expects.
   ///
   /// ANGLE's GL framebuffer and Impeller's render-to-texture have opposite

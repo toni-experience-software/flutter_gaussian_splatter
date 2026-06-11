@@ -14,5 +14,9 @@
   "SkyFragment": {
     "type": "fragment",
     "file": "shaders/gpu/sky.frag"
+  },
+  "ShResolveFragment": {
+    "type": "fragment",
+    "file": "shaders/gpu/sh_resolve.frag"
   }
 }

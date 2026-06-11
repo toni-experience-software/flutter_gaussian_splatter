@@ -243,17 +243,27 @@ void main(List<String> args) async {
 impellerc dialect notes (this is GLSL 4.60-flavored, compiled to
 SPIR-V → MSL / GLSL ES):
 
-- **No `#version` directive, no `precision` statements** — impellerc handles it.
 - Loose uniforms are not allowed: scalars/matrices go in a **uniform block**;
   samplers stay as standalone `uniform sampler2D`.
-- `texelFetch` is core GLSL and is the numerically safest way to read the
-  RGBA32F atlas (raw bits, no filtering — required because texels carry
-  `floatBitsToUint`-packed words). Use it first; if a backend rejects it,
-  fall back to `texture()` with a nearest sampler + half-texel-centered UVs,
-  the pattern flutter_scene's `flutter_scene_skinned.vert` uses for its
-  joints texture (proves vertex-stage texture reads work on all backends).
-- `gl_VertexID` replaces both `gl_InstanceID` and the `position` attribute
-  (stable flutter_gpu has **no instancing** — master does; see Phase 4).
+- **VERIFIED 2026-06-10 (impellerc from Flutter 3.44.1):** shader bundles are
+  unconditionally cross-compiled to Metal, SPIR-V, **ESSL 1.00** (`#version
+  100`, Impeller GLES backend) and **GLSL 1.20** (`#version 120`, desktop GL).
+  Consequences:
+  - `texelFetch` **crashes impellerc** (SIGABRT in SPIRV-Cross
+    `legacy_tex_op`). Use `texture()` with half-texel-centered UVs — the
+    flutter_scene `GetJoint` pattern.
+  - `floatBitsToUint` / `intBitsToFloat` **crash impellerc**
+    (`bitcast_glsl_op`). No bit-packed float lanes — restructure packed data
+    into RGBA8 UNorm textures decoded with float arithmetic (see 2.3).
+  - Integer bitwise ops / `uint` / const array constructors compile, but the
+    generated ESSL 100 variant is **silently invalid** — it only breaks at
+    runtime on Android GLES-fallback devices. Prefer float `mod()`/`floor()`
+    index math throughout to keep that door open.
+- `gl_VertexIndex` (Vulkan-GLSL name; impellerc compiles with Vulkan
+  semantics — `gl_VertexID` does not exist here) replaces both
+  `gl_InstanceID` and the `position` attribute (stable flutter_gpu has
+  **no instancing** — master does; see Phase 4). SPIRV-Cross translates it
+  per backend.
 
 Structure:
 
@@ -477,9 +487,10 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Zero-attribute pipeline / `gl_VertexID` rejected by impellerc or a backend | medium | Spike first (Phase 2.4); two documented fallbacks |
-| `texelFetch` unsupported in vertex stage on some backend | low | `texture()` + nearest + texel-center UVs (flutter_scene pattern) |
-| NaN bit-patterns in RGBA32F atlas mangled by sampling | low (texelFetch returns raw bits; angle path already does this) | If artifacts: move packed words to an RGBA8 side texture |
+| Zero-attribute pipeline | CONFIRMED BROKEN (2026-06-10): compiles, but `ShaderLibrary::MakeFromFlatbuffer` null-derefs `backend_shader->inputs()` for vertex shaders with no input attributes → EXC_BAD_ACCESS at `fromAsset` (engine bug: missing null check in `lib/gpu/shader_library.cc`; flatbuffers packs empty `inputs` as absent) | Use the batched-draw fallback: real `in vec3 position` corner+localIndex attribute (4096-splat batch, 288 KB static buffer), per-batch `BatchInfo { float base_splat; }` UBO, ⌈N/4096⌉ draws per pass. File upstream issue. |
+| `texelFetch` in shader bundles | ~~low~~ CONFIRMED BROKEN: crashes impellerc (legacy ESSL 100 target) | `texture()` + nearest + texel-center UVs (flutter_scene pattern) |
+| `floatBitsToUint`/`intBitsToFloat` in shader bundles | CONFIRMED BROKEN: crashes impellerc | No bit-packed lanes: quat/color/SH move to RGBA8 UNorm textures, float-arithmetic decode (full parity preserved) |
+| Generated ESSL 100 variant silently invalid (bitwise ops, uint, array ctors) | certain if used | Affects only Android GLES-fallback Impeller; prefer float index math to keep it viable |
 | Y-flip / handedness differences vs angle path | high (expected, one-time) | Calibration step in 2.2 with asymmetric scene |
 | flutter_gpu API breaks on Flutter upgrade | medium | It's SDK-pinned: breaks = compile errors, fix is mechanical; pin CI to a known Flutter version |
 | `ShaderLibrary.fromAsset` asset path differs for package (vs app) context | medium | Verify `packages/flutter_gaussian_splatter/...` prefix early in 2.4 spike |

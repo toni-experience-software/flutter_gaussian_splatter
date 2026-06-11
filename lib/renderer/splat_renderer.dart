@@ -21,6 +21,13 @@ abstract interface class SplatRenderer {
   /// Uploads raw processed splat data.
   Future<void> setSplatData(Uint8List data);
 
+  /// NDC Y-axis sign this backend's render target expects.
+  ///
+  /// ANGLE's GL framebuffer and Impeller's render-to-texture have opposite
+  /// vertical conventions, so each backend declares its own sign rather than
+  /// the widget guessing from the platform.
+  double get ndcYSign;
+
   /// Currently active camera.
   Camera? get camera;
 

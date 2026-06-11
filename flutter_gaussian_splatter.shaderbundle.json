@@ -6,5 +6,13 @@
   "SplatFragment": {
     "type": "fragment",
     "file": "shaders/gpu/splat.frag"
+  },
+  "SkyVertex": {
+    "type": "vertex",
+    "file": "shaders/gpu/sky.vert"
+  },
+  "SkyFragment": {
+    "type": "fragment",
+    "file": "shaders/gpu/sky.frag"
   }
 }

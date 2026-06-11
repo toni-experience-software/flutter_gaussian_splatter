@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -8,6 +7,7 @@ import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/files/file_processor.dart';
 import 'package:flutter_gaussian_splatter/renderer/backend_selector.dart';
+import 'package:flutter_gaussian_splatter/renderer/background_rotation.dart';
 import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
@@ -175,7 +175,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     final camera = Camera.createDefault(
       width: renderSize.width,
       height: renderSize.height,
-      ndcYSign: Platform.isAndroid ? 1 : -1,
+      ndcYSign: _renderer.ndcYSign,
     );
 
     // Initialize spherical coordinates from initial camera position
@@ -196,6 +196,11 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       _renderer.camera = camera;
       if (widget.backgroundAssetPath != null) {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
+        // Apply the shared default orientation so backends can't drift.
+        _renderer.setBackgroundRotation(
+          defaultBackgroundYawDegrees,
+          defaultBackgroundPitchDegrees,
+        );
       }
 
       await _loadSplatDataFromAsset(widget.assetPath);
@@ -219,7 +224,12 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
 
   Future<void> _loadSplatDataFromAsset(String assetPath) async {
     final byteData = await flutter_services.rootBundle.load(assetPath);
-    final bytes = Uint8List.fromList(byteData.buffer.asUint8List());
+    final bytes = Uint8List.fromList(
+      byteData.buffer.asUint8List(
+        byteData.offsetInBytes,
+        byteData.lengthInBytes,
+      ),
+    );
 
     final processedData = _fileProcessor.isPly(bytes)
         ? _fileProcessor.processPlyBuffer(bytes)

@@ -48,7 +48,7 @@ class _GaussianSplatterHomePageState extends State<GaussianSplatterHomePage> {
             key: _splatterKey,
             assetPath: 'assets/toycar.ply',
             disableAlphaWrite: false,
-            // backgroundAssetPath: 'assets/sky.jpg',
+            backgroundAssetPath: 'assets/sky.jpg',
             // showStats: _showStats,
             enableProfiling: false,
             backend: SplatBackend.flutterGpu,

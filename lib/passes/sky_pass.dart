@@ -1,5 +1,4 @@
 import 'dart:async'; // For unawaited
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' as services;
@@ -7,6 +6,7 @@ import 'package:flutter_angle/flutter_angle.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/gl/gl_capabilities.dart';
 import 'package:flutter_gaussian_splatter/gl/shader_factory.dart';
+import 'package:flutter_gaussian_splatter/renderer/background_rotation.dart';
 import 'package:flutter_gaussian_splatter/renderer/render_pass.dart';
 import 'package:vector_math/vector_math.dart';
 
@@ -55,24 +55,7 @@ class SkyPass extends RenderPass {
   /// internally and
   /// applied during [execute].
   void setYawPitchDegrees(double yawDeg, double pitchDeg) {
-    final y = yawDeg * math.pi / 180.0;
-    final p = pitchDeg * math.pi / 180.0;
-    final cy = math.cos(y);
-    final sy = math.sin(y);
-    final cp = math.cos(p);
-    final sp = math.sin(p);
-
-    _bgRot = Float32List.fromList(<double>[
-      cy,
-      sy * sp,
-      sy * cp,
-      0,
-      cp,
-      -sp,
-      -sy,
-      cy * sp,
-      cy * cp,
-    ]);
+    _bgRot = backgroundRotation3x3(yawDeg, pitchDeg);
   }
 
   /// Releases GPU resources and resets internal state.

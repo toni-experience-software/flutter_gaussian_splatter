@@ -1,11 +1,13 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/services.dart' as services;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/constants.dart';
 import 'package:flutter_gaussian_splatter/perf/ewma.dart';
 import 'package:flutter_gaussian_splatter/perf/render_stats.dart';
+import 'package:flutter_gaussian_splatter/renderer/background_rotation.dart';
 import 'package:flutter_gaussian_splatter/renderer/gpu/gpu_splat_source.dart';
 import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
 import 'package:flutter_gaussian_splatter/sorting/depth_sorter.dart' as depth;
@@ -18,9 +20,13 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   late gpu.Shader _vertexShader;
   late gpu.Shader _fragmentShader;
   late gpu.RenderPipeline _pipeline;
+  late gpu.Shader _skyVertexShader;
+  late gpu.Shader _skyFragmentShader;
+  late gpu.RenderPipeline _skyPipeline;
   late gpu.Texture _target;
   late gpu.HostBuffer _frameUniforms;
   late gpu.DeviceBuffer _quadVertexBuffer;
+  late gpu.DeviceBuffer _skyVertexBuffer;
   late gpu.UniformSlot _frameInfoSlot;
   late gpu.UniformSlot _batchInfoSlot;
   late gpu.UniformSlot _atlasSlot;
@@ -28,6 +34,14 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   late gpu.UniformSlot _quatSlot;
   late gpu.UniformSlot _colorSlot;
   late gpu.UniformSlot _shSlot;
+  late gpu.UniformSlot _skyInfoSlot;
+  late gpu.UniformSlot _skyBgSlot;
+
+  static final gpu.SamplerOptions _nearestSampler = gpu.SamplerOptions();
+  static final gpu.SamplerOptions _linearSampler = gpu.SamplerOptions(
+    minFilter: gpu.MinMagFilter.linear,
+    magFilter: gpu.MinMagFilter.linear,
+  );
 
   final GpuSplatSource _source = GpuSplatSource();
   late final depth.DepthSorterImpl _depthSorter = depth.DepthSorterImpl(
@@ -41,6 +55,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   Uint8List? _splatBuffer;
   ui.Image? _lastFrame;
   DateTime? _lastFrameTime;
+  gpu.Texture? _backgroundTexture;
   bool _inFrame = false;
   bool _isResizing = false;
   bool _sortInFlight = false;
@@ -52,13 +67,23 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   int _sortGeneration = 0;
   int _sortDataGeneration = 0;
   VoidCallback? _onNeedsRender;
+  vm.Matrix4 _backgroundRotation = vm.Matrix4.identity();
 
   static const int _splatsPerBatch = 4096;
   static const int _verticesPerSplat = 6;
   static const int _floatsPerVertex = 3;
   static const int _bytesPerFloat = 4;
+  static const int _skyVertexCount = 3;
+  static const int _skyVertexFloatsPerVertex = 2;
   static const int _quadVertexBufferBytes =
       _splatsPerBatch * _verticesPerSplat * _floatsPerVertex * _bytesPerFloat;
+  static const int _skyVertexBufferBytes =
+      _skyVertexCount * _skyVertexFloatsPerVertex * _bytesPerFloat;
+
+  /// Impeller normalizes vertical conventions across its backends, so the
+  /// render-to-texture path needs a single sign on every platform.
+  @override
+  double get ndcYSign => 1;
 
   @override
   Camera? get camera => _camera;
@@ -127,6 +152,16 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _frameUniforms = gpu.gpuContext.createHostBuffer();
     _quadVertexBuffer =
         gpu.gpuContext.createDeviceBufferWithCopy(_buildQuadVertexData());
+    _skyVertexShader = library['SkyVertex']!;
+    _skyFragmentShader = library['SkyFragment']!;
+    _skyPipeline = gpu.gpuContext.createRenderPipeline(
+      _skyVertexShader,
+      _skyFragmentShader,
+    );
+    _skyInfoSlot = _skyFragmentShader.getUniformSlot('SkyInfo');
+    _skyBgSlot = _skyFragmentShader.getUniformSlot('u_bg');
+    _skyVertexBuffer =
+        gpu.gpuContext.createDeviceBufferWithCopy(_buildSkyVertexData());
     _target = _createTarget(width, height);
   }
 
@@ -178,20 +213,22 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   Future<void> frame() async {
     if (_isResizing || _inFrame || _camera == null) return;
 
+    final hasBackground = _backgroundTexture != null;
     final atlas = _source.atlas;
     final orderTexture = _source.orderTexture;
     final quatTexture = _source.quatTexture;
     final colorTexture = _source.colorTexture;
     final shTexture = _source.shTexture;
-    if (atlas == null ||
-        orderTexture == null ||
-        quatTexture == null ||
-        colorTexture == null ||
-        shTexture == null ||
-        _source.splatCount == 0) {
+    final hasSplats = atlas != null &&
+        orderTexture != null &&
+        quatTexture != null &&
+        colorTexture != null &&
+        shTexture != null &&
+        _source.splatCount > 0;
+
+    if (!hasBackground && !hasSplats) {
       return;
     }
-
     _inFrame = true;
     final watch = Stopwatch()..start();
     try {
@@ -211,54 +248,86 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
           gpu.Viewport(width: _target.width, height: _target.height),
         )
         ..setDepthWriteEnable(false)
-        ..setColorBlendEnable(true)
         ..setColorBlendEquation(gpu.ColorBlendEquation())
         ..setCullMode(gpu.CullMode.none);
 
-      final frameInfo = _frameUniforms.emplace(_packFrameInfo());
-      for (var baseSplat = 0;
-          baseSplat < _source.splatCount;
-          baseSplat += _splatsPerBatch) {
-        final remaining = _source.splatCount - baseSplat;
-        final splatsInBatch =
-            remaining < _splatsPerBatch ? remaining : _splatsPerBatch;
+      if (hasBackground) {
         renderPass
-          ..bindPipeline(_pipeline)
-          ..bindUniform(_frameInfoSlot, frameInfo)
-          ..bindUniform(
-            _batchInfoSlot,
-            _frameUniforms.emplace(_packBatchInfo(baseSplat)),
-          )
-          ..bindTexture(_atlasSlot, atlas, sampler: gpu.SamplerOptions())
+          ..bindPipeline(_skyPipeline)
+          ..setColorBlendEnable(false)
+          ..bindUniform(_skyInfoSlot, _frameUniforms.emplace(_packSkyInfo()))
           ..bindTexture(
-            _orderSlot,
-            orderTexture,
-            sampler: gpu.SamplerOptions(),
-          )
-          ..bindTexture(
-            _quatSlot,
-            quatTexture,
-            sampler: gpu.SamplerOptions(),
-          )
-          ..bindTexture(
-            _colorSlot,
-            colorTexture,
-            sampler: gpu.SamplerOptions(),
-          )
-          ..bindTexture(
-            _shSlot,
-            shTexture,
-            sampler: gpu.SamplerOptions(),
+            _skyBgSlot,
+            _backgroundTexture!,
+            sampler: _linearSampler,
           )
           ..bindVertexBuffer(
             gpu.BufferView(
-              _quadVertexBuffer,
+              _skyVertexBuffer,
               offsetInBytes: 0,
-              lengthInBytes: _quadVertexBufferBytes,
+              lengthInBytes: _skyVertexBufferBytes,
             ),
-            splatsInBatch * _verticesPerSplat,
+            _skyVertexCount,
           )
           ..draw();
+      }
+
+      if (hasSplats) {
+        final atlasTexture = atlas;
+        final orderTex = orderTexture;
+        final quatTex = quatTexture;
+        final colorTex = colorTexture;
+        final shTex = shTexture;
+        final frameInfo = _frameUniforms.emplace(_packFrameInfo());
+        for (var baseSplat = 0;
+            baseSplat < _source.splatCount;
+            baseSplat += _splatsPerBatch) {
+          final remaining = _source.splatCount - baseSplat;
+          final splatsInBatch =
+              remaining < _splatsPerBatch ? remaining : _splatsPerBatch;
+          renderPass
+            ..bindPipeline(_pipeline)
+            ..setColorBlendEnable(true)
+            ..bindUniform(_frameInfoSlot, frameInfo)
+            ..bindUniform(
+              _batchInfoSlot,
+              _frameUniforms.emplace(_packBatchInfo(baseSplat)),
+            )
+            ..bindTexture(
+              _atlasSlot,
+              atlasTexture,
+              sampler: gpu.SamplerOptions(),
+            )
+            ..bindTexture(
+              _orderSlot,
+              orderTex,
+              sampler: gpu.SamplerOptions(),
+            )
+            ..bindTexture(
+              _quatSlot,
+              quatTex,
+              sampler: gpu.SamplerOptions(),
+            )
+            ..bindTexture(
+              _colorSlot,
+              colorTex,
+              sampler: gpu.SamplerOptions(),
+            )
+            ..bindTexture(
+              _shSlot,
+              shTex,
+              sampler: gpu.SamplerOptions(),
+            )
+            ..bindVertexBuffer(
+              gpu.BufferView(
+                _quadVertexBuffer,
+                offsetInBytes: 0,
+                lengthInBytes: _quadVertexBufferBytes,
+              ),
+              splatsInBatch * _verticesPerSplat,
+            )
+            ..draw();
+        }
       }
 
       commandBuffer.submit();
@@ -274,10 +343,54 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   }
 
   @override
-  Future<void> enableBackgroundFromAsset(String assetPath) async {}
+  Future<void> enableBackgroundFromAsset(String assetPath) async {
+    final byteData = await services.rootBundle.load(assetPath);
+    final codec = await ui.instantiateImageCodec(
+      byteData.buffer.asUint8List(
+        byteData.offsetInBytes,
+        byteData.lengthInBytes,
+      ),
+    );
+    try {
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      try {
+        final rgba = await image.toByteData();
+        if (rgba == null) {
+          throw StateError(
+            'Failed to convert background image to raw RGBA bytes.',
+          );
+        }
+
+        final width = image.width;
+        final height = image.height;
+        if (_backgroundTexture == null ||
+            _backgroundTexture!.width != width ||
+            _backgroundTexture!.height != height) {
+          _backgroundTexture = gpu.gpuContext.createTexture(
+            gpu.StorageMode.hostVisible,
+            width,
+            height,
+            enableRenderTargetUsage: false,
+          );
+        }
+        _backgroundTexture!.overwrite(rgba);
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
+
+    _onNeedsRender?.call();
+  }
 
   @override
-  void setBackgroundRotation(double yawDegrees, double pitchDegrees) {}
+  void setBackgroundRotation(double yawDegrees, double pitchDegrees) {
+    _backgroundRotation =
+        _matrix4From3x3(backgroundRotation3x3(yawDegrees, pitchDegrees));
+    _onNeedsRender?.call();
+  }
 
   @override
   Widget buildOutput(BuildContext context, {required Size logicalSize}) {
@@ -300,6 +413,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _lastFrame = null;
     _source.dispose();
     _depthSorter.dispose();
+    _backgroundTexture = null;
   }
 
   gpu.Texture _createTarget(int width, int height) {
@@ -308,6 +422,33 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       width,
       height,
     );
+  }
+
+  ByteData _packSkyInfo() {
+    final size = _skyInfoSlot.sizeInBytes ?? 144;
+    final data = ByteData(size);
+
+    final viewportOffset = _skyInfoSlot.getMemberOffsetInBytes('viewport') ?? 0;
+    data
+      ..setFloat32(viewportOffset, _camera!.width.toDouble(), Endian.host)
+      ..setFloat32(viewportOffset + 4, _camera!.height.toDouble(), Endian.host);
+
+    final focalOffset = _skyInfoSlot.getMemberOffsetInBytes('focal') ?? 8;
+    data
+      ..setFloat32(focalOffset, _camera!.focalXForShader(), Endian.host)
+      ..setFloat32(focalOffset + 4, _camera!.focalYForShader(), Endian.host);
+
+    _writeMatrix(
+      data,
+      _skyInfoSlot.getMemberOffsetInBytes('invViewRot') ?? 16,
+      _matrix4From3x3(_camera!.invViewRotation3x3()),
+    );
+    _writeMatrix(
+      data,
+      _skyInfoSlot.getMemberOffsetInBytes('bgRot') ?? 80,
+      _backgroundRotation,
+    );
+    return data;
   }
 
   ByteData _packFrameInfo() {
@@ -421,10 +562,42 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     return vertices.buffer.asByteData();
   }
 
+  ByteData _buildSkyVertexData() {
+    return Float32List.fromList(<double>[
+      -1.0,
+      -1.0,
+      3.0,
+      -1.0,
+      -1.0,
+      3.0,
+    ]).buffer.asByteData();
+  }
+
   void _writeMatrix(ByteData data, int offset, vm.Matrix4 matrix) {
     for (var i = 0; i < 16; i++) {
       data.setFloat32(offset + i * 4, matrix.storage[i], Endian.host);
     }
+  }
+
+  vm.Matrix4 _matrix4From3x3(List<double> matrix3) {
+    return vm.Matrix4(
+      matrix3[0],
+      matrix3[1],
+      matrix3[2],
+      0,
+      matrix3[3],
+      matrix3[4],
+      matrix3[5],
+      0,
+      matrix3[6],
+      matrix3[7],
+      matrix3[8],
+      0,
+      0,
+      0,
+      0,
+      1,
+    );
   }
 
   void _updateProjectionMatrix() {

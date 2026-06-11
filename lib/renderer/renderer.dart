@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -113,6 +114,10 @@ class AngleSplatRenderer implements SplatRenderer {
           _camera!.height.toDouble(),
         );
 
+  /// NDC Y-axis sign for ANGLE's per-platform GL surface conventions.
+  @override
+  double get ndcYSign => Platform.isAndroid ? 1 : -1;
+
   /// The currently active [Camera], or `null` if not set.
   @override
   Camera? get camera => _camera;
@@ -131,7 +136,6 @@ class AngleSplatRenderer implements SplatRenderer {
   Future<void> enableBackgroundFromAsset(String assetPath) async {
     _bg ??= SkyPass(assetPath: assetPath);
     await _bg!.init(_gl, caps: _caps);
-    _bg?.setYawPitchDegrees(90, 0); // pitch only → flips sky/ground
     _bgAssetPath = assetPath;
   }
 

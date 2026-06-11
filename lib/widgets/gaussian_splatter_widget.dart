@@ -6,8 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' as flutter_services;
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/files/file_processor.dart';
-import 'package:flutter_gaussian_splatter/renderer/backend_selector.dart';
 import 'package:flutter_gaussian_splatter/renderer/background_rotation.dart';
+import 'package:flutter_gaussian_splatter/renderer/gpu/flutter_gpu_splat_renderer.dart';
 import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
@@ -21,16 +21,12 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// The [assetPath] must point to a valid .ply file or processed splat data.
   /// Set [showStats] to true to display rendering statistics overlay.
   /// Set [enableProfiling] to true to enable detailed performance profiling
-  /// Set [disableAlphaWrite] to true to optimize bandwidth by disabling alpha
-  /// writes
   const GaussianSplatterWidget({
     required this.assetPath,
     this.backgroundAssetPath,
     super.key,
     this.showStats = false,
     this.enableProfiling = false,
-    this.disableAlphaWrite = true,
-    this.backend = SplatBackend.auto,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -44,16 +40,8 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// When true, enables GPU timing if supported by the platform.
   final bool enableProfiling;
 
-  /// Whether to disable alpha channel writes for bandwidth optimization.
-  /// Only disable if nothing downstream samples the framebuffer's alpha
-  /// channel.
-  final bool disableAlphaWrite;
-
   /// Path to the asset containing the background image.
   final String? backgroundAssetPath;
-
-  /// Rendering backend to use.
-  final SplatBackend backend;
 
   @override
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
@@ -99,10 +87,7 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
   }
 
   SplatRenderer _createRenderer() {
-    return createRenderer(
-      widget.backend,
-      disableAlphaWrite: widget.disableAlphaWrite,
-    );
+    return FlutterGpuSplatRenderer();
   }
 
   void _resetRendererForRetry() {
@@ -178,11 +163,14 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       ndcYSign: _renderer.ndcYSign,
     );
 
-    // Initialize spherical coordinates from initial camera position
-    final pos = camera.position;
-    _orbitDistance = pos.length;
-    _theta = math.atan2(pos.x, pos.z);
-    _phi = math.acos(pos.y / _orbitDistance);
+    // Initialize spherical coordinates relative to the orbit origin so the
+    // first frame is posed with the same math as orbit interaction (otherwise
+    // the camera jumps on the first drag, since createDefault orbits the
+    // world origin while _applyCameraFromSpherical orbits _orbitOrigin).
+    final rel = camera.position - _orbitOrigin;
+    _orbitDistance = rel.length;
+    _theta = math.atan2(rel.x, rel.z);
+    _phi = math.acos(rel.y / _orbitDistance);
 
     try {
       await _renderer.initialize();
@@ -194,6 +182,8 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
       );
 
       _renderer.camera = camera;
+      // Re-pose through the orbit path so frame 0 matches post-drag math.
+      _applyCameraFromSpherical();
       if (widget.backgroundAssetPath != null) {
         await _renderer.enableBackgroundFromAsset(widget.backgroundAssetPath!);
         // Apply the shared default orientation so backends can't drift.

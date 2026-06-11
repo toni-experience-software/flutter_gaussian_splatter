@@ -49,6 +49,9 @@ abstract interface class SplatRenderer {
   /// Enables a renderer-managed background from an asset.
   Future<void> enableBackgroundFromAsset(String assetPath);
 
+  /// Removes the renderer-managed background, if any.
+  void disableBackground();
+
   /// Updates renderer-managed background orientation.
   void setBackgroundRotation(double yawDegrees, double pitchDegrees);
 

@@ -273,12 +273,16 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       }
 
       if (hasSplats) {
-        final atlasTexture = atlas;
-        final orderTex = orderTexture;
-        final quatTex = quatTexture;
-        final colorTex = colorTexture;
-        final shTex = shTexture;
         final frameInfo = _frameUniforms.emplace(_packFrameInfo());
+        renderPass
+          ..bindPipeline(_pipeline)
+          ..setColorBlendEnable(true)
+          ..bindUniform(_frameInfoSlot, frameInfo)
+          ..bindTexture(_atlasSlot, atlas, sampler: _nearestSampler)
+          ..bindTexture(_orderSlot, orderTexture, sampler: _nearestSampler)
+          ..bindTexture(_quatSlot, quatTexture, sampler: _nearestSampler)
+          ..bindTexture(_colorSlot, colorTexture, sampler: _nearestSampler)
+          ..bindTexture(_shSlot, shTexture, sampler: _nearestSampler);
         for (var baseSplat = 0;
             baseSplat < _source.splatCount;
             baseSplat += _splatsPerBatch) {
@@ -286,37 +290,9 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
           final splatsInBatch =
               remaining < _splatsPerBatch ? remaining : _splatsPerBatch;
           renderPass
-            ..bindPipeline(_pipeline)
-            ..setColorBlendEnable(true)
-            ..bindUniform(_frameInfoSlot, frameInfo)
             ..bindUniform(
               _batchInfoSlot,
               _frameUniforms.emplace(_packBatchInfo(baseSplat)),
-            )
-            ..bindTexture(
-              _atlasSlot,
-              atlasTexture,
-              sampler: gpu.SamplerOptions(),
-            )
-            ..bindTexture(
-              _orderSlot,
-              orderTex,
-              sampler: gpu.SamplerOptions(),
-            )
-            ..bindTexture(
-              _quatSlot,
-              quatTex,
-              sampler: gpu.SamplerOptions(),
-            )
-            ..bindTexture(
-              _colorSlot,
-              colorTex,
-              sampler: gpu.SamplerOptions(),
-            )
-            ..bindTexture(
-              _shSlot,
-              shTex,
-              sampler: gpu.SamplerOptions(),
             )
             ..bindVertexBuffer(
               gpu.BufferView(
@@ -382,6 +358,12 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       codec.dispose();
     }
 
+    _onNeedsRender?.call();
+  }
+
+  @override
+  void disableBackground() {
+    _backgroundTexture = null;
     _onNeedsRender?.call();
   }
 
@@ -564,12 +546,12 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
 
   ByteData _buildSkyVertexData() {
     return Float32List.fromList(<double>[
-      -1.0,
-      -1.0,
-      3.0,
-      -1.0,
-      -1.0,
-      3.0,
+      -1,
+      -1,
+      3,
+      -1,
+      -1,
+      3,
     ]).buffer.asByteData();
   }
 

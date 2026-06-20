@@ -377,6 +377,32 @@ Interaction: ${_isInteracting ? 'Active' : 'Idle'}''';
     _renderer.setBackgroundRotation(yawDegrees, pitchDegrees);
   }
 
+  /// Whether a morph transition is currently active.
+  bool get isMorphing => _renderer.isMorphing;
+
+  /// Starts a morph from the displayed splats toward [targetData].
+  ///
+  /// Defaults to an identity (row-aligned) mapping; pass
+  /// `buildCorrespondence: true` to match two unrelated captures.
+  Future<void> startMorph(
+    Uint8List targetData, {
+    bool buildCorrespondence = false,
+    bool indexMatch = false,
+    bool mortonMatch = false,
+  }) =>
+      _renderer.startMorph(
+        targetData,
+        buildCorrespondence: buildCorrespondence,
+        indexMatch: indexMatch,
+        mortonMatch: mortonMatch,
+      );
+
+  /// Sets the morph factor in `[0, 1]`.
+  void setMorphProgress(double t) => _renderer.setMorphProgress(t);
+
+  /// Ends any active morph and restores the original splats.
+  void clearMorph() => _renderer.clearMorph();
+
   Widget _buildStatsOverlay() {
     return Positioned(
       top: 16,

@@ -12,6 +12,8 @@ uniform FrameInfo {
   float sidecar_height;
   float sh_height;
   float use_resolved;
+  float morph_t;
+  float morph_active;
 } frame_info;
 
 uniform BatchInfo {
@@ -25,6 +27,12 @@ uniform sampler2D u_color_texture;
 uniform sampler2D u_sh_texture;
 uniform sampler2D u_resolved_texture;
 
+// Morph target ("B") atlases. Row-aligned to the "A" set: the same `idx`
+// addresses the matched (or zero-substituted) partner splat.
+uniform sampler2D u_texture_b;
+uniform sampler2D u_quat_texture_b;
+uniform sampler2D u_color_texture_b;
+
 in vec3 position;
 
 out vec4 vColor;
@@ -34,11 +42,11 @@ vec4 fetchTexel(sampler2D source, vec2 texel, vec2 size) {
     return texture(source, (texel + vec2(0.5)) / size);
 }
 
-vec4 fetchAtlas(float idx, float offset) {
+vec4 fetchAtlas2(sampler2D source, float idx, float offset) {
     float col = mod(idx, 512.0);
     float row = floor(idx / 512.0);
     return fetchTexel(
-        u_texture,
+        source,
         vec2(col * 2.0 + offset, row),
         vec2(1024.0, frame_info.atlas_height));
 }
@@ -68,6 +76,13 @@ float decodeOrder(vec4 orderTexel) {
 vec4 decodeQuaternion(vec4 packedQuat) {
     vec4 q = packedQuat * 255.0 - 128.0;
     return normalize(q);
+}
+
+// Per-splat normalized-lerp with shortest-path sign correction. Cheaper than
+// slerp and visually identical for ellipsoid orientations over a transition.
+vec4 nlerpQuat(vec4 a, vec4 b, float t) {
+    if (dot(a, b) < 0.0) b = -b;
+    return normalize(mix(a, b, t));
 }
 
 vec4 unpackSH(vec4 packed) {
@@ -178,13 +193,31 @@ void main() {
         return;
     }
 
-    vec4 p0_data = fetchAtlas(idx, 0.0);
-    vec4 p1_data = fetchAtlas(idx, 1.0);
+    bool morphing = frame_info.morph_active > 0.5;
+    float t = morphing ? frame_info.morph_t : 0.0;
+
+    vec4 p0_data = fetchAtlas2(u_texture, idx, 0.0);
+    vec4 p1_data = fetchAtlas2(u_texture, idx, 1.0);
     vec4 quat = decodeQuaternion(fetchSidecar(u_quat_texture, idx));
     vec4 base_color_srgb = fetchSidecar(u_color_texture, idx);
 
+    if (morphing) {
+        // Interpolate every attribute toward the target splat (same idx — the
+        // two atlases are row-aligned). A missing partner carries zero scale +
+        // zero opacity, so it shrinks and fades automatically with no branch.
+        vec4 b0 = fetchAtlas2(u_texture_b, idx, 0.0);
+        vec4 b1 = fetchAtlas2(u_texture_b, idx, 1.0);
+        vec4 quat_b = decodeQuaternion(fetchSidecar(u_quat_texture_b, idx));
+        vec4 color_b = fetchSidecar(u_color_texture_b, idx);
+        p0_data.xyz = mix(p0_data.xyz, b0.xyz, t);
+        p1_data.xyz = mix(p1_data.xyz, b1.xyz, t);
+        quat = nlerpQuat(quat, quat_b, t);
+        base_color_srgb = mix(base_color_srgb, color_b, t);
+    }
+
     // Vertex-stage alpha discard: skip near-transparent splats before any
-    // covariance/SH work (PlayCanvas vert/gsplat.js:89).
+    // covariance/SH work (PlayCanvas vert/gsplat.js:89). Also culls the
+    // zero-opacity endpoint of an appearing/vanishing splat.
     if (base_color_srgb.a <= 1.0 / 255.0) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;
@@ -258,7 +291,11 @@ void main() {
     }
 
     vec3 final_srgb_rgb;
-    if (frame_info.use_resolved > 0.5) {
+    if (morphing) {
+        // Skip SH during the transition: the lerped DC color reads fine and
+        // avoids 2x SH fetch/eval. Full SH resumes at the endpoints.
+        final_srgb_rgb = base_color_srgb.rgb;
+    } else if (frame_info.use_resolved > 0.5) {
         // Resolved path: one fetch of the precomputed per-splat color, skipping
         // the 12 SH fetches + evaluation entirely.
         final_srgb_rgb = fetchSidecar(u_resolved_texture, idx).rgb;

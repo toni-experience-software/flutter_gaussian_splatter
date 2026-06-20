@@ -21,6 +21,40 @@ abstract interface class SplatRenderer {
   /// Uploads raw processed splat data.
   Future<void> setSplatData(Uint8List data);
 
+  /// Whether a morph transition is currently active.
+  bool get isMorphing;
+
+  /// Begins a morph from the currently displayed splats toward [targetData]
+  /// (standard 128-byte layout).
+  ///
+  /// When [buildCorrespondence] is true the two sets are matched spatially and
+  /// by color, and unmatched splats fade/scale in or out. When false the target
+  /// must have the same splat count as the current data and is treated as a
+  /// row-aligned 1:1 mapping (each splat flies to the same-index target).
+  ///
+  /// When [indexMatch] is true the two sets are paired purely by index
+  /// (`A[i]` ↔ `B[i]`) with no spatial matching, and the larger set's surplus
+  /// fades/scales in or out. It overrides [buildCorrespondence].
+  ///
+  /// When [mortonMatch] is true both clouds are sorted along a Morton (Z-order)
+  /// curve and paired by spatial rank, so the source coherently flows into the
+  /// target shape. It overrides [indexMatch] and [buildCorrespondence].
+  ///
+  /// Drive the transition with [setMorphProgress] and end it with [clearMorph].
+  Future<void> startMorph(
+    Uint8List targetData, {
+    bool buildCorrespondence,
+    bool indexMatch,
+    bool mortonMatch,
+  });
+
+  /// Sets the morph interpolation factor in `[0, 1]`. No-op unless a morph is
+  /// active.
+  void setMorphProgress(double t);
+
+  /// Ends any active morph and restores the original splats.
+  void clearMorph();
+
   /// When true, evaluate spherical harmonics per-splat every frame (highest
   /// quality). When false, use the cheaper resolve-pass approximation that
   /// evaluates SH once per splat with a single global view direction.

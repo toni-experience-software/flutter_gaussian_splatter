@@ -118,11 +118,30 @@ class DepthSorterImpl {
     );
   }
 
+  /// Supplies row-aligned start/end buffers so sorts can depth-key the
+  /// interpolated position `mix(posA, posB, t)`. Chunk frustum culling is
+  /// disabled while morph data is active (the precomputed spheres would be
+  /// stale as splats move).
+  void setMorphData(Uint8List bufferA, Uint8List bufferB, int vertexCount) {
+    if (_ready == null || !_ready!.isCompleted) {
+      throw StateError('DepthSorter.initialize() must be awaited first');
+    }
+
+    _sendPort.send(
+      _SetMorphDataRequest(
+        bufferA: bufferA,
+        bufferB: bufferB,
+        vertexCount: vertexCount,
+      ),
+    );
+  }
+
   /// Run sort
   SortResult runSort(
     Matrix4 viewProjection, {
     required int generation,
     required int dataGeneration,
+    double morphT = 0,
   }) {
     if (_ready == null || !_ready!.isCompleted) {
       throw StateError('DepthSorter.initialize() must be awaited first');
@@ -133,6 +152,7 @@ class DepthSorterImpl {
         viewProjection: _matToListReuse(viewProjection),
         generation: generation,
         dataGeneration: dataGeneration,
+        morphT: morphT,
         recycled: _recycledOrder,
       ),
     );
@@ -183,17 +203,34 @@ class _SetDataRequest {
   final int vertexCount;
 }
 
+/// Request message supplying row-aligned morph endpoints.
+class _SetMorphDataRequest {
+  const _SetMorphDataRequest({
+    required this.bufferA,
+    required this.bufferB,
+    required this.vertexCount,
+  });
+  final Uint8List bufferA;
+  final Uint8List bufferB;
+  final int vertexCount;
+}
+
 /// Request message for depth sorting operation.
 class _SortRequest {
   const _SortRequest({
     required this.viewProjection,
     required this.generation,
     required this.dataGeneration,
+    this.morphT = 0,
     this.recycled,
   });
   final List<double> viewProjection;
   final int generation;
   final int dataGeneration;
+
+  /// Morph progress used to depth-key `mix(posA, posB, morphT)`; ignored when
+  /// no morph data is set.
+  final double morphT;
 
   /// A previously-emitted order buffer handed back for reuse (zero-copy).
   final TransferableTypedData? recycled;
@@ -226,6 +263,8 @@ void _sortIsolateEntry(_SorterIsolateConfig config) {
   port.listen((msg) {
     if (msg is _SetDataRequest) {
       _setIsolateData(msg);
+    } else if (msg is _SetMorphDataRequest) {
+      _setMorphData(msg);
     } else if (msg is _SortRequest) {
       toMain.send(_performSort(msg));
     }
@@ -237,6 +276,9 @@ Int32List? _isolateTmpArray;
 Uint32List? _isolateCountsArray;
 Uint32List? _isolateStartsArray;
 Float32List? _isolatePositions;
+// Morph target positions, row-aligned to [_isolatePositions]. Non-null while a
+// morph is active; sorts then depth-key the interpolated position.
+Float32List? _isolatePositionsB;
 int _isolateVertexCount = 0;
 
 // Per-chunk bounding spheres for frustum culling (256-splat chunks).
@@ -362,6 +404,7 @@ int _adaptiveBucketCount(int n) {
 
 void _setIsolateData(_SetDataRequest request) {
   _isolateVertexCount = request.vertexCount;
+  _isolatePositionsB = null; // leaving any morph; revert to single-buffer sort
   if (request.vertexCount <= 0 || request.buffer.isEmpty) {
     _isolatePositions = Float32List(0);
     _isolateChunkCount = 0;
@@ -384,6 +427,47 @@ void _setIsolateData(_SetDataRequest request) {
   }
   _isolatePositions = positions;
   _buildChunkSpheres(positions, request.vertexCount);
+}
+
+Float32List _extractPositions(Uint8List buffer, int vertexCount) {
+  final fBuf = Float32List.view(
+    buffer.buffer,
+    buffer.offsetInBytes,
+    buffer.lengthInBytes ~/ 4,
+  );
+  final floatsPerSplat = buffer.lengthInBytes ~/ vertexCount ~/ 4;
+  final positions = Float32List(vertexCount * 3);
+  for (var i = 0; i < vertexCount; i++) {
+    final sourceBase = floatsPerSplat * i;
+    final targetBase = i * 3;
+    positions[targetBase] = fBuf[sourceBase];
+    positions[targetBase + 1] = fBuf[sourceBase + 1];
+    positions[targetBase + 2] = fBuf[sourceBase + 2];
+  }
+  return positions;
+}
+
+void _setMorphData(_SetMorphDataRequest request) {
+  _isolateVertexCount = request.vertexCount;
+  if (request.vertexCount <= 0 ||
+      request.bufferA.isEmpty ||
+      request.bufferB.isEmpty) {
+    _isolatePositions = Float32List(0);
+    _isolatePositionsB = null;
+    _isolateChunkCount = 0;
+    _isolateChunkCenters = null;
+    _isolateChunkRadii = null;
+    _isolateChunkVisible = null;
+    return;
+  }
+  _isolatePositions = _extractPositions(request.bufferA, request.vertexCount);
+  _isolatePositionsB = _extractPositions(request.bufferB, request.vertexCount);
+  // Disable chunk culling for the morph: spheres built from static positions
+  // would be stale as splats fly between endpoints.
+  _isolateChunkCount = 0;
+  _isolateChunkCenters = null;
+  _isolateChunkRadii = null;
+  _isolateChunkVisible = null;
 }
 
 /// Builds a zero-copy response by transferring ownership of [out] to main.
@@ -477,6 +561,11 @@ _SortResponse _performSort(_SortRequest request) {
   _computeChunkVisibility(vp);
   final chunkVisible = _isolateChunkVisible;
 
+  // When morphing, depth-key the interpolated position between the two
+  // row-aligned endpoint buffers.
+  final posB = _isolatePositionsB;
+  final morphT = request.morphT;
+
   // Calculate depth values (min/max over in-front splats only).
   for (var i = 0; i < n; ++i) {
     if (chunkVisible != null && chunkVisible[i >> _chunkShift] == 0) {
@@ -484,9 +573,14 @@ _SortResponse _performSort(_SortRequest request) {
       continue;
     }
     final base = i * 3;
-    final x = positions[base];
-    final y = positions[base + 1];
-    final z = positions[base + 2];
+    var x = positions[base];
+    var y = positions[base + 1];
+    var z = positions[base + 2];
+    if (posB != null) {
+      x += (posB[base] - x) * morphT;
+      y += (posB[base + 1] - y) * morphT;
+      z += (posB[base + 2] - z) * morphT;
+    }
     final w = vp3 * x + vp7 * y + vp11 * z + vp15;
     if (w <= 0) {
       tmp[i] = behindMarker;

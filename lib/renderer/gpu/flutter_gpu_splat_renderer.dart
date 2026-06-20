@@ -1,10 +1,12 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart' as services;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_gaussian_splatter/camera/camera.dart';
 import 'package:flutter_gaussian_splatter/constants.dart';
+import 'package:flutter_gaussian_splatter/morph/correspondence.dart';
 import 'package:flutter_gaussian_splatter/perf/ewma.dart';
 import 'package:flutter_gaussian_splatter/perf/render_stats.dart';
 import 'package:flutter_gaussian_splatter/renderer/background_rotation.dart';
@@ -34,6 +36,9 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   late gpu.UniformSlot _quatSlot;
   late gpu.UniformSlot _colorSlot;
   late gpu.UniformSlot _shSlot;
+  late gpu.UniformSlot _atlasSlotB;
+  late gpu.UniformSlot _quatSlotB;
+  late gpu.UniformSlot _colorSlotB;
   late gpu.UniformSlot _skyInfoSlot;
   late gpu.UniformSlot _skyBgSlot;
   late gpu.Shader _shResolveFragmentShader;
@@ -50,6 +55,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   );
 
   final GpuSplatSource _source = GpuSplatSource();
+  final GpuSplatSource _sourceB = GpuSplatSource();
   late final depth.DepthSorterImpl _depthSorter = depth.DepthSorterImpl(
     onSortComplete: _handleSortComplete,
   );
@@ -77,6 +83,13 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   gpu.Texture? _resolvedColorTexture;
   int _resolvedHeight = 0;
   bool _highQualitySH = false;
+  bool _morphActive = false;
+  double _morphT = 0;
+  Uint8List? _originalBuffer;
+  // The end-state ("B") buffer of the active morph. Chaining a new morph
+  // (cycling through a sequence of models) starts from this instead of the
+  // original A, so model0 -> model1 -> model2 flows seam-to-seam.
+  Uint8List? _morphTarget;
   bool _resolveDataDirty = true;
   bool _resolvedActive = false;
   vm.Vector3? _lastResolvedDirection;
@@ -177,6 +190,9 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _colorSlot = _vertexShader.getUniformSlot('u_color_texture');
     _shSlot = _vertexShader.getUniformSlot('u_sh_texture');
     _resolvedSlot = _vertexShader.getUniformSlot('u_resolved_texture');
+    _atlasSlotB = _vertexShader.getUniformSlot('u_texture_b');
+    _quatSlotB = _vertexShader.getUniformSlot('u_quat_texture_b');
+    _colorSlotB = _vertexShader.getUniformSlot('u_color_texture_b');
     _frameUniforms = gpu.gpuContext.createHostBuffer();
     _quadVertexBuffer =
         gpu.gpuContext.createDeviceBufferWithCopy(_buildQuadVertexData());
@@ -254,6 +270,123 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   }
 
   @override
+  bool get isMorphing => _morphActive;
+
+  @override
+  Future<void> startMorph(
+    Uint8List targetData, {
+    bool buildCorrespondence = true,
+    bool indexMatch = false,
+    bool mortonMatch = false,
+  }) async {
+    if (targetData.length % GsConst.bytesPerSplat != 0) {
+      throw ArgumentError.value(
+        targetData.length,
+        'targetData.length',
+        'Must be a multiple of ${GsConst.bytesPerSplat}',
+      );
+    }
+    // When chaining (a morph is already active), start from its end-state so a
+    // sequence model0 -> model1 -> model2 flows seam-to-seam. The very first
+    // morph starts from the displayed buffer.
+    final chaining = _morphActive;
+    _originalBuffer ??= _splatBuffer;
+    final a = chaining ? _morphTarget : _splatBuffer;
+    if (a == null) {
+      throw StateError('setSplatData must run before startMorph');
+    }
+
+    final aCount = a.length ~/ GsConst.bytesPerSplat;
+    final bCount = targetData.length ~/ GsConst.bytesPerSplat;
+
+    if (mortonMatch) {
+      // Spatial-rank pairing: coherent flow into the target shape.
+      _applyAligned(
+        await compute(
+          buildMortonIsolate,
+          CorrespondenceParams(a: a, b: targetData),
+        ),
+      );
+    } else if (indexMatch) {
+      // Pair A[i] <-> B[i]; the larger model leads (rendered count = max), its
+      // surplus fades/scales in or out. No spatial matching, so this is a cheap
+      // synchronous row copy (no isolate, no sorting) -> fast to start.
+      _applyAligned(buildIndexAlignment(a, targetData));
+    } else if (!buildCorrespondence && aCount == bCount) {
+      // Identity alignment: A stays put and the target maps row-for-row. The
+      // caller guarantees a meaningful 1:1 ordering. When chaining, A is the
+      // previous segment's end-state, so refresh _source to display it.
+      if (chaining) {
+        _source
+          ..uploadSplats(a)
+          ..uploadOrder(_sequentialOrder(aCount));
+      }
+      _sourceB.uploadSplats(targetData);
+      _splatBuffer = a;
+      _morphTarget = targetData;
+      _depthSorter.setMorphData(a, targetData, aCount);
+    } else {
+      // Genuine two-file morph: match splats, then upload the row-aligned pair.
+      _applyAligned(
+        await compute(
+          buildCorrespondenceIsolate,
+          CorrespondenceParams(a: a, b: targetData),
+        ),
+      );
+    }
+
+    _morphActive = true;
+    _morphT = 0;
+    _visibleCount = -1;
+    _sortDataGeneration++;
+    if (_camera != null) {
+      _requestSort(force: true);
+    }
+    _onNeedsRender?.call();
+  }
+
+  void _applyAligned(AlignedMorph aligned) {
+    _source.uploadSplats(aligned.bufferA);
+    _sourceB.uploadSplats(aligned.bufferB);
+    _splatBuffer = aligned.bufferA;
+    _morphTarget = aligned.bufferB;
+    _depthSorter.setMorphData(aligned.bufferA, aligned.bufferB, aligned.count);
+    _source.uploadOrder(_sequentialOrder(aligned.count));
+  }
+
+  @override
+  void setMorphProgress(double t) {
+    if (!_morphActive) return;
+    _morphT = t.clamp(0.0, 1.0);
+    _requestSort(force: true);
+    _onNeedsRender?.call();
+  }
+
+  @override
+  void clearMorph() {
+    if (!_morphActive) return;
+    _morphActive = false;
+    _morphT = 0;
+    _morphTarget = null;
+    final original = _originalBuffer;
+    _originalBuffer = null;
+    if (original != null) {
+      _splatBuffer = original;
+      _source.uploadSplats(original);
+      _sortDataGeneration++;
+      _depthSorter.setSplatData(original, _source.splatCount);
+      _source.uploadOrder(_sequentialOrder(_source.splatCount));
+      _visibleCount = -1;
+      _resolveDataDirty = true;
+      _lastResolvedDirection = null;
+      if (_camera != null) {
+        _requestSort(force: true);
+      }
+    }
+    _onNeedsRender?.call();
+  }
+
+  @override
   Future<void> frame() async {
     if (_isResizing || _inFrame || _camera == null) return;
 
@@ -284,7 +417,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       // on its own command buffer (submitted first) because flutter_gpu allows
       // only one render pass to encode per command buffer at a time.
       _resolvedActive = false;
-      if (hasSplats && !_highQualitySH) {
+      if (hasSplats && !_highQualitySH && !_morphActive) {
         _ensureResolvedTexture();
         if (_shouldResolveNow()) {
           final resolveBuffer = gpu.gpuContext.createCommandBuffer();
@@ -369,6 +502,14 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
 
       if (hasSplats) {
         final frameInfo = _frameUniforms.emplace(_packFrameInfo());
+        // The B samplers must always be bound; when no morph is active the A
+        // textures stand in for them (unsampled because morph_active == 0).
+        final atlasB = _morphActive ? (_sourceB.atlas ?? atlas) : atlas;
+        final quatB =
+            _morphActive ? (_sourceB.quatTexture ?? quatTexture) : quatTexture;
+        final colorB = _morphActive
+            ? (_sourceB.colorTexture ?? colorTexture)
+            : colorTexture;
         renderPass
           ..bindPipeline(_pipeline)
           ..setColorBlendEnable(true)
@@ -378,6 +519,9 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
           ..bindTexture(_quatSlot, quatTexture, sampler: _nearestSampler)
           ..bindTexture(_colorSlot, colorTexture, sampler: _nearestSampler)
           ..bindTexture(_shSlot, shTexture, sampler: _nearestSampler)
+          ..bindTexture(_atlasSlotB, atlasB, sampler: _nearestSampler)
+          ..bindTexture(_quatSlotB, quatB, sampler: _nearestSampler)
+          ..bindTexture(_colorSlotB, colorB, sampler: _nearestSampler)
           // u_resolved_texture must always be bound; when high-quality SH is
           // active it goes unsampled, so the color texture stands in for it.
           ..bindTexture(
@@ -501,6 +645,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _lastFrame?.dispose();
     _lastFrame = null;
     _source.dispose();
+    _sourceB.dispose();
     _depthSorter.dispose();
     _backgroundTexture = null;
     _resolvedColorTexture = null;
@@ -617,6 +762,14 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       _resolvedActive ? 1.0 : 0.0,
       Endian.host,
     );
+
+    final morphTOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('morph_t') ?? 172;
+    data.setFloat32(morphTOffset, _morphT, Endian.host);
+
+    final morphActiveOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('morph_active') ?? 176;
+    data.setFloat32(morphActiveOffset, _morphActive ? 1.0 : 0.0, Endian.host);
 
     return data;
   }
@@ -785,6 +938,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
         vp,
         generation: generation,
         dataGeneration: _sortDataGeneration,
+        morphT: _morphActive ? _morphT : 0.0,
       );
     } catch (_) {
       _clearSortInFlight();

@@ -11,7 +11,7 @@ This package is an early developer preview and is **not yet intended for product
 
 ---
 
-Flutter Gaussian Splatter renders 3D Gaussian Splatting scenes natively in Flutter. It is built on [Flutter GPU][flutter_gpu_link], Flutter's low-level graphics API on top of the [Impeller][impeller_link] rendering engine — no platform views, no external graphics runtime, just a regular Flutter widget.
+Flutter Gaussian Splatter renders 3D Gaussian Splatting scenes natively in Flutter. It is built on [Flutter GPU][flutter_gpu_link], Flutter's low-level graphics API on top of the [Impeller][impeller_link] rendering engine, no platform views, no external graphics runtime, just a regular Flutter widget.
 
 ## Overview
 
@@ -21,23 +21,23 @@ This project provides a Flutter widget for rendering 3D scenes using Gaussian Sp
 
 ## Requirements
 
-*   Flutter **3.44 or newer** (stable channel). Flutter GPU and Dart build hooks — both of which this package relies on — are available on stable as of 3.44.
+*   Flutter **3.44 or newer** (stable channel). Flutter GPU and Dart build hooks, both of which this package relies on, are available on stable as of 3.44.
 *   A platform where Impeller and Flutter GPU are available: **iOS**, **Android**, or **macOS**. Windows, Linux, and web are not supported yet.
 
-The package compiles its shaders into a Flutter GPU shader bundle automatically at build time via a Dart build hook — you don't need to configure anything for that.
+The package compiles its shaders into a Flutter GPU shader bundle automatically at build time via a Dart build hook, you don't need to configure anything for that.
 
 ## Enabling Flutter GPU
 
 Flutter GPU ships with the stable channel but is **opt-in per platform**. Enable it in the app that consumes this package:
 
-**iOS** — add to `ios/Runner/Info.plist` (Impeller is already the default renderer on iOS):
+**iOS**, add to `ios/Runner/Info.plist` (Impeller is already the default renderer on iOS):
 
 ```xml
 <key>FLTEnableFlutterGPU</key>
 <true/>
 ```
 
-**macOS** — add to `macos/Runner/Info.plist` (Impeller also needs to be switched on):
+**macOS**, add to `macos/Runner/Info.plist` (Impeller also needs to be switched on):
 
 ```xml
 <key>FLTEnableImpeller</key>
@@ -46,7 +46,7 @@ Flutter GPU ships with the stable channel but is **opt-in per platform**. Enable
 <true/>
 ```
 
-**Android** — add inside the `<application>` element of `android/app/src/main/AndroidManifest.xml`:
+**Android**, add inside the `<application>` element of `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
 <meta-data
@@ -54,7 +54,7 @@ Flutter GPU ships with the stable channel but is **opt-in per platform**. Enable
     android:value="true" />
 ```
 
-These flags are permitted in release builds. Note that the platform folders of the bundled `example/` app are not checked in — if you run it, generate them with `flutter create .` inside `example/` and then add the flags above.
+These flags are permitted in release builds. Note that the platform folders of the bundled `example/` app are not checked in, if you run it, generate them with `flutter create .` inside `example/` and then add the flags above.
 
 ## Basic Usage Example
 

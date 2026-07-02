@@ -1,3 +1,23 @@
+## 0.4.0 - 2026-07-02
+
+### 💥 Breaking Changes
+* **BREAKING**: The ANGLE/OpenGL rendering backend has been removed. The package now renders exclusively through Flutter GPU (Impeller).
+* **BREAKING**: `GaussianSplatterWidget` no longer takes the `backend` and `disableAlphaWrite` parameters (both configured the removed ANGLE backend).
+* **BREAKING**: Requires Flutter 3.44 or newer, and Flutter GPU must be enabled per platform — see the README section "Enabling Flutter GPU".
+* **BREAKING**: Dropped the `flutter_angle` and `ffi` dependencies. Shaders are now compiled into a Flutter GPU shader bundle at build time via Dart build hooks (automatic, no app-side setup).
+* **BREAKING**: Windows and web are not supported by the new backend. Supported platforms are iOS, Android, and macOS.
+
+### ✨ New
+* feat: `highQualitySH` flag on `GaussianSplatterWidget`. Off by default: spherical harmonics are resolved once per splat with a global view direction (a large vertex-stage win). Turn it on for full per-splat, per-frame SH evaluation.
+* feat: background sky sphere on the Flutter GPU backend, with runtime orientation via `setBackgroundRotation(yaw, pitch)` and `disableBackground()`.
+
+### 🚀 Performance
+* perf: depth sorting runs in a dedicated isolate using an adaptive-bucket radix sort with zero-copy (transferable) order buffers.
+* perf: behind-camera splats are parked in the sort tail and skipped at draw time (visible-count truncation).
+* perf: 256-splat chunk bounding-sphere culling against the lateral frustum planes.
+* perf: vertex-stage alpha discard, normalized opacity falloff, and clamping of oversized splats instead of culling them (fixes dropout when zooming in close).
+* perf: uniform member offsets are cached at setup and staging buffers are reused — no per-frame or per-batch allocations in the render loop.
+
 ## 0.3.0 - 2025-09-08
 
 ### 🏗️ Architecture Overhaul

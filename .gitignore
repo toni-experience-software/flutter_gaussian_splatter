@@ -28,4 +28,6 @@ pubspec_overrides.yaml
 .flutter-plugins
 .flutter-plugins-dependencies
 shaders/reference_vertex.glsl
-reference/*
+reference/
+# Editor configs with machine-specific paths
+.vscode/

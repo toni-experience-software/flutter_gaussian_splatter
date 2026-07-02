@@ -11,7 +11,7 @@ import 'package:flutter_gaussian_splatter/renderer/gpu/flutter_gpu_splat_rendere
 import 'package:flutter_gaussian_splatter/renderer/splat_renderer.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
-/// A widget that renders Gaussian splat data using WebGL/ANGLE.
+/// A widget that renders Gaussian splat data using Flutter GPU (Impeller).
 ///
 /// This widget provides interactive camera controls for orbiting and zooming
 /// around the 3D scene. The splat data is loaded from the provided asset path.

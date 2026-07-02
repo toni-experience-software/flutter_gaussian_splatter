@@ -28,6 +28,8 @@ class GaussianSplatterWidget extends StatefulWidget {
     this.showStats = false,
     this.enableProfiling = false,
     this.highQualitySH = false,
+    this.initialYawDegrees = 0,
+    this.initialVerticalOffset = 0,
   });
 
   /// Path to the asset containing the Gaussian splat data.
@@ -48,6 +50,14 @@ class GaussianSplatterWidget extends StatefulWidget {
   /// view-dependent fidelity. When false (default), use the cheaper resolve
   /// approximation with a single global view direction.
   final bool highQualitySH;
+
+  /// Yaw applied to the default camera pose at first init, in degrees. Rotates
+  /// the orbit around the scene's up axis (positive = counter-clockwise).
+  final double initialYawDegrees;
+
+  /// Vertical pan applied to the default framing at first init, in world units.
+  /// Positive moves the camera (and its look-at point) up.
+  final double initialVerticalOffset;
 
   @override
   State<GaussianSplatterWidget> createState() => GaussianSplatterWidgetState();
@@ -177,6 +187,11 @@ class GaussianSplatterWidgetState extends State<GaussianSplatterWidget> {
     _orbitDistance = rel.length;
     _theta = math.atan2(rel.x, rel.z);
     _phi = math.acos(rel.y / _orbitDistance);
+
+    // Caller-requested initial framing: yaw the orbit and pan it vertically.
+    // Up is -Y in this coordinate system, so a positive offset lifts the view.
+    _theta += widget.initialYawDegrees * (math.pi / 180.0);
+    _orbitOrigin.y -= widget.initialVerticalOffset;
 
     try {
       await _renderer.initialize();

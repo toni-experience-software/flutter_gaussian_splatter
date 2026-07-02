@@ -43,6 +43,35 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   late gpu.UniformSlot _shResolveColorSlot;
   late gpu.UniformSlot _resolvedSlot;
 
+  // Uniform member offsets are fixed once the pipelines are created, so they
+  // are cached in setup() along with reusable staging buffers. HostBuffer
+  // emplace() copies the bytes immediately, which makes reuse across calls
+  // within a frame safe.
+  late ByteData _skyInfoData;
+  late int _skyViewportOffset;
+  late int _skyFocalOffset;
+  late int _skyInvViewRotOffset;
+  late int _skyBgRotOffset;
+  late ByteData _frameInfoData;
+  late int _frameProjectionOffset;
+  late int _frameViewOffset;
+  late int _frameFocalOffset;
+  late int _frameViewportOffset;
+  late int _frameSplatCountOffset;
+  late int _frameMaxSplatSizeOffset;
+  late int _frameAtlasHeightOffset;
+  late int _frameOrderHeightOffset;
+  late int _frameSidecarHeightOffset;
+  late int _frameShHeightOffset;
+  late int _frameUseResolvedOffset;
+  late ByteData _shResolveInfoData;
+  late int _resolveViewDirOffset;
+  late int _resolveSplatCountOffset;
+  late int _resolveShHeightOffset;
+  late int _resolveSidecarHeightOffset;
+  late ByteData _batchInfoData;
+  late int _batchBaseSplatOffset;
+
   static final gpu.SamplerOptions _nearestSampler = gpu.SamplerOptions();
   static final gpu.SamplerOptions _linearSampler = gpu.SamplerOptions(
     minFilter: gpu.MinMagFilter.linear,
@@ -93,6 +122,17 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
       _splatsPerBatch * _verticesPerSplat * _floatsPerVertex * _bytesPerFloat;
   static const int _skyVertexBufferBytes =
       _skyVertexCount * _skyVertexFloatsPerVertex * _bytesPerFloat;
+
+  /// Dot-product bound on view-direction change before a re-sort is requested.
+  static const double _sortDirectionDotThreshold = 0.999;
+
+  /// Squared camera-position delta that forces a re-sort.
+  static const double _sortPositionDeltaSq = 0.0001;
+
+  /// Dot-product bound on view-direction change before the approximated SH
+  /// colors are re-resolved. SH varies slowly with direction, so this can be
+  /// tuned coarser than [_sortDirectionDotThreshold] independently.
+  static const double _shResolveDirectionDotThreshold = 0.999;
 
   /// Impeller normalizes vertical conventions across its backends, so the
   /// render-to-texture path needs a single sign on every platform.
@@ -203,7 +243,53 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     _shResolveColorSlot =
         _shResolveFragmentShader.getUniformSlot('u_color_texture');
 
+    _cacheUniformLayouts();
     _target = _createTarget(width, height);
+  }
+
+  void _cacheUniformLayouts() {
+    _skyInfoData = ByteData(_skyInfoSlot.sizeInBytes ?? 144);
+    _skyViewportOffset = _skyInfoSlot.getMemberOffsetInBytes('viewport') ?? 0;
+    _skyFocalOffset = _skyInfoSlot.getMemberOffsetInBytes('focal') ?? 8;
+    _skyInvViewRotOffset =
+        _skyInfoSlot.getMemberOffsetInBytes('invViewRot') ?? 16;
+    _skyBgRotOffset = _skyInfoSlot.getMemberOffsetInBytes('bgRot') ?? 80;
+
+    _frameInfoData = ByteData(_frameInfoSlot.sizeInBytes ?? 176);
+    _frameProjectionOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('projection') ?? 0;
+    _frameViewOffset = _frameInfoSlot.getMemberOffsetInBytes('view') ?? 64;
+    _frameFocalOffset = _frameInfoSlot.getMemberOffsetInBytes('focal') ?? 128;
+    _frameViewportOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('viewport') ?? 136;
+    _frameSplatCountOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('splat_count') ?? 144;
+    _frameMaxSplatSizeOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('max_splat_size') ?? 148;
+    _frameAtlasHeightOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('atlas_height') ?? 152;
+    _frameOrderHeightOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('order_height') ?? 156;
+    _frameSidecarHeightOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('sidecar_height') ?? 160;
+    _frameShHeightOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('sh_height') ?? 164;
+    _frameUseResolvedOffset =
+        _frameInfoSlot.getMemberOffsetInBytes('use_resolved') ?? 168;
+
+    _shResolveInfoData = ByteData(_shResolveInfoSlot.sizeInBytes ?? 32);
+    _resolveViewDirOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('view_dir') ?? 0;
+    _resolveSplatCountOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('splat_count') ?? 12;
+    _resolveShHeightOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('sh_height') ?? 16;
+    _resolveSidecarHeightOffset =
+        _shResolveInfoSlot.getMemberOffsetInBytes('sidecar_height') ?? 20;
+
+    _batchInfoData = ByteData(_batchInfoSlot.sizeInBytes ?? 16);
+    _batchBaseSplatOffset =
+        _batchInfoSlot.getMemberOffsetInBytes('base_splat') ?? 0;
   }
 
   @override
@@ -288,17 +374,19 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
         _ensureResolvedTexture();
         if (_shouldResolveNow()) {
           final resolveBuffer = gpu.gpuContext.createCommandBuffer();
-          resolveBuffer
-              .createRenderPass(
-                gpu.RenderTarget.singleColor(
-                  gpu.ColorAttachment(
-                    texture: _resolvedColorTexture!,
-                    clearValue: vm.Vector4(0, 0, 0, 0),
-                  ),
-                ),
-              )
+          resolveBuffer.createRenderPass(
+            gpu.RenderTarget.singleColor(
+              gpu.ColorAttachment(
+                texture: _resolvedColorTexture!,
+                clearValue: vm.Vector4(0, 0, 0, 0),
+              ),
+            ),
+          )
             ..setViewport(
-              gpu.Viewport(width: 512, height: _resolvedHeight),
+              gpu.Viewport(
+                width: GsConst.splatsPerRow,
+                height: _resolvedHeight,
+              ),
             )
             ..setDepthWriteEnable(false)
             ..setColorBlendEnable(false)
@@ -498,12 +586,16 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
 
   @override
   void dispose() {
-    _lastFrame?.dispose();
-    _lastFrame = null;
-    _source.dispose();
-    _depthSorter.dispose();
-    _backgroundTexture = null;
-    _resolvedColorTexture = null;
+    try {
+      _lastFrame?.dispose();
+      _lastFrame = null;
+      _source.dispose();
+    } finally {
+      // The sorter owns an isolate; release it even if texture cleanup throws.
+      _depthSorter.dispose();
+      _backgroundTexture = null;
+      _resolvedColorTexture = null;
+    }
   }
 
   gpu.Texture _createTarget(int width, int height) {
@@ -515,141 +607,103 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
   }
 
   ByteData _packSkyInfo() {
-    final size = _skyInfoSlot.sizeInBytes ?? 144;
-    final data = ByteData(size);
-
-    final viewportOffset = _skyInfoSlot.getMemberOffsetInBytes('viewport') ?? 0;
-    data
-      ..setFloat32(viewportOffset, _camera!.width.toDouble(), Endian.host)
-      ..setFloat32(viewportOffset + 4, _camera!.height.toDouble(), Endian.host);
-
-    final focalOffset = _skyInfoSlot.getMemberOffsetInBytes('focal') ?? 8;
-    data
-      ..setFloat32(focalOffset, _camera!.focalXForShader(), Endian.host)
-      ..setFloat32(focalOffset + 4, _camera!.focalYForShader(), Endian.host);
-
+    final data = _skyInfoData
+      ..setFloat32(_skyViewportOffset, _camera!.width.toDouble(), Endian.host)
+      ..setFloat32(
+        _skyViewportOffset + 4,
+        _camera!.height.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(_skyFocalOffset, _camera!.focalXForShader(), Endian.host)
+      ..setFloat32(
+        _skyFocalOffset + 4,
+        _camera!.focalYForShader(),
+        Endian.host,
+      );
     _writeMatrix(
       data,
-      _skyInfoSlot.getMemberOffsetInBytes('invViewRot') ?? 16,
+      _skyInvViewRotOffset,
       _matrix4From3x3(_camera!.invViewRotation3x3()),
     );
-    _writeMatrix(
-      data,
-      _skyInfoSlot.getMemberOffsetInBytes('bgRot') ?? 80,
-      _backgroundRotation,
-    );
+    _writeMatrix(data, _skyBgRotOffset, _backgroundRotation);
     return data;
   }
 
   ByteData _packFrameInfo() {
-    final size = _frameInfoSlot.sizeInBytes ?? 176;
-    final data = ByteData(size);
-    _writeMatrix(
-      data,
-      _frameInfoSlot.getMemberOffsetInBytes('projection') ?? 0,
-      _projectionMatrix,
-    );
-    _writeMatrix(
-      data,
-      _frameInfoSlot.getMemberOffsetInBytes('view') ?? 64,
-      _viewMatrix,
-    );
-
-    final focalOffset = _frameInfoSlot.getMemberOffsetInBytes('focal') ?? 128;
-    data
-      ..setFloat32(focalOffset, _camera!.focalXForShader(), Endian.host)
-      ..setFloat32(focalOffset + 4, _camera!.focalYForShader(), Endian.host);
-
-    final viewportOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('viewport') ?? 136;
-    data
-      ..setFloat32(viewportOffset, _camera!.width.toDouble(), Endian.host)
-      ..setFloat32(viewportOffset + 4, _camera!.height.toDouble(), Endian.host);
-
-    final splatCountOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('splat_count') ?? 144;
-    data.setFloat32(
-      splatCountOffset,
-      _source.splatCount.toDouble(),
-      Endian.host,
-    );
-
-    final maxSizeOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('max_splat_size') ?? 148;
-    data.setFloat32(maxSizeOffset, GsConst.maxSplatPixelSize, Endian.host);
-
-    final atlasHeightOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('atlas_height') ?? 152;
-    data.setFloat32(
-      atlasHeightOffset,
-      _source.atlasHeight.toDouble(),
-      Endian.host,
-    );
-
-    final orderHeightOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('order_height') ?? 156;
-    data.setFloat32(
-      orderHeightOffset,
-      _source.orderHeight.toDouble(),
-      Endian.host,
-    );
-
-    final sidecarHeightOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('sidecar_height') ?? 160;
-    data.setFloat32(
-      sidecarHeightOffset,
-      _source.sidecarHeight.toDouble(),
-      Endian.host,
-    );
-
-    final shHeightOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('sh_height') ?? 164;
-    data.setFloat32(
-      shHeightOffset,
-      _source.shHeight.toDouble(),
-      Endian.host,
-    );
-
-    final useResolvedOffset =
-        _frameInfoSlot.getMemberOffsetInBytes('use_resolved') ?? 168;
-    data.setFloat32(
-      useResolvedOffset,
-      _resolvedActive ? 1.0 : 0.0,
-      Endian.host,
-    );
-
-    return data;
+    final data = _frameInfoData;
+    _writeMatrix(data, _frameProjectionOffset, _projectionMatrix);
+    _writeMatrix(data, _frameViewOffset, _viewMatrix);
+    return data
+      ..setFloat32(_frameFocalOffset, _camera!.focalXForShader(), Endian.host)
+      ..setFloat32(
+        _frameFocalOffset + 4,
+        _camera!.focalYForShader(),
+        Endian.host,
+      )
+      ..setFloat32(_frameViewportOffset, _camera!.width.toDouble(), Endian.host)
+      ..setFloat32(
+        _frameViewportOffset + 4,
+        _camera!.height.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameSplatCountOffset,
+        _source.splatCount.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameMaxSplatSizeOffset,
+        GsConst.maxSplatPixelSize,
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameAtlasHeightOffset,
+        _source.atlasHeight.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameOrderHeightOffset,
+        _source.orderHeight.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameSidecarHeightOffset,
+        _source.sidecarHeight.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameShHeightOffset,
+        _source.shHeight.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _frameUseResolvedOffset,
+        _resolvedActive ? 1.0 : 0.0,
+        Endian.host,
+      );
   }
 
   ByteData _packShResolveInfo() {
-    final size = _shResolveInfoSlot.sizeInBytes ?? 32;
-    final data = ByteData(size);
-
     final dir = _viewDirectionFor(_camera!);
-    final dirOffset =
-        _shResolveInfoSlot.getMemberOffsetInBytes('view_dir') ?? 0;
-    data
-      ..setFloat32(dirOffset, dir.x, Endian.host)
-      ..setFloat32(dirOffset + 4, dir.y, Endian.host)
-      ..setFloat32(dirOffset + 8, dir.z, Endian.host);
-
-    final countOffset =
-        _shResolveInfoSlot.getMemberOffsetInBytes('splat_count') ?? 12;
-    data.setFloat32(countOffset, _source.splatCount.toDouble(), Endian.host);
-
-    final shHeightOffset =
-        _shResolveInfoSlot.getMemberOffsetInBytes('sh_height') ?? 16;
-    data.setFloat32(shHeightOffset, _source.shHeight.toDouble(), Endian.host);
-
-    final sidecarHeightOffset =
-        _shResolveInfoSlot.getMemberOffsetInBytes('sidecar_height') ?? 20;
-    data.setFloat32(
-      sidecarHeightOffset,
-      _source.sidecarHeight.toDouble(),
-      Endian.host,
-    );
-
-    return data;
+    return _shResolveInfoData
+      ..setFloat32(_resolveViewDirOffset, dir.x, Endian.host)
+      ..setFloat32(_resolveViewDirOffset + 4, dir.y, Endian.host)
+      ..setFloat32(_resolveViewDirOffset + 8, dir.z, Endian.host)
+      ..setFloat32(
+        _resolveSplatCountOffset,
+        _source.splatCount.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _resolveShHeightOffset,
+        _source.shHeight.toDouble(),
+        Endian.host,
+      )
+      ..setFloat32(
+        _resolveSidecarHeightOffset,
+        _source.sidecarHeight.toDouble(),
+        Endian.host,
+      );
   }
 
   void _ensureResolvedTexture() {
@@ -658,7 +712,7 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     if (_resolvedColorTexture == null || _resolvedHeight != height) {
       _resolvedColorTexture = gpu.gpuContext.createTexture(
         gpu.StorageMode.devicePrivate,
-        512,
+        GsConst.splatsPerRow,
         height,
       );
       _resolvedHeight = height;
@@ -671,18 +725,13 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     if (_resolveDataDirty) return true;
     final last = _lastResolvedDirection;
     if (last == null) return true;
-    // SH varies slowly with direction, so a coarser threshold than the sort's.
-    return _viewDirectionFor(_camera!).dot(last) < 0.999;
+    return _viewDirectionFor(_camera!).dot(last) <
+        _shResolveDirectionDotThreshold;
   }
 
   ByteData _packBatchInfo(int baseSplat) {
-    final size = _batchInfoSlot.sizeInBytes ?? 16;
-    return ByteData(size)
-      ..setFloat32(
-        _batchInfoSlot.getMemberOffsetInBytes('base_splat') ?? 0,
-        baseSplat.toDouble(),
-        Endian.host,
-      );
+    return _batchInfoData
+      ..setFloat32(_batchBaseSplatOffset, baseSplat.toDouble(), Endian.host);
   }
 
   ByteData _buildQuadVertexData() {
@@ -829,12 +878,14 @@ class FlutterGpuSplatRenderer implements SplatRenderer {
     final currentDirection = _viewDirectionFor(camera);
     final lastDirection = _lastSortedDirection;
     if (lastDirection == null) return true;
-    if (currentDirection.dot(lastDirection) < 0.999) return true;
+    if (currentDirection.dot(lastDirection) < _sortDirectionDotThreshold) {
+      return true;
+    }
 
     final lastPosition = _lastSortedPosition;
     if (lastPosition == null) return true;
 
-    return (camera.position - lastPosition).length2 > 0.0001;
+    return (camera.position - lastPosition).length2 > _sortPositionDeltaSq;
   }
 
   vm.Vector3 _viewDirectionFor(Camera camera) {

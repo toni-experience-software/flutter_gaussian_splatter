@@ -19,6 +19,13 @@ uniform sampler2D u_color_texture;
 
 out vec4 fragColor;
 
+// Texture layout constants — must match GsConst.splatsPerRow
+// (lib/constants.dart), the packing in lib/renderer/gpu/gpu_splat_source.dart,
+// and the constants in splat.vert.
+const float SPLATS_PER_ROW = 512.0;
+const float SH_TEXELS_PER_SPLAT = 12.0;
+const float SH_WIDTH = SPLATS_PER_ROW * SH_TEXELS_PER_SPLAT;
+
 vec4 fetchTexel(sampler2D source, vec2 texel, vec2 size) {
     return texture(source, (texel + vec2(0.5)) / size);
 }
@@ -26,17 +33,18 @@ vec4 fetchTexel(sampler2D source, vec2 texel, vec2 size) {
 vec4 fetchSidecar(sampler2D source, float idx) {
     return fetchTexel(
         source,
-        vec2(mod(idx, 512.0), floor(idx / 512.0)),
-        vec2(512.0, resolve_info.sidecar_height));
+        vec2(mod(idx, SPLATS_PER_ROW), floor(idx / SPLATS_PER_ROW)),
+        vec2(SPLATS_PER_ROW, resolve_info.sidecar_height));
 }
 
 vec4 fetchSH(float idx, float coefficientGroup) {
-    // 6144-wide layout: 12 adjacent texels per splat, 512 splats per row —
-    // must match fetchSH in splat.vert and the packing in gpu_splat_source.
+    // 12 adjacent texels per splat, 512 splats per row — must match fetchSH
+    // in splat.vert and the packing in gpu_splat_source.
     return fetchTexel(
         u_sh_texture,
-        vec2(mod(idx, 512.0) * 12.0 + coefficientGroup, floor(idx / 512.0)),
-        vec2(6144.0, resolve_info.sh_height));
+        vec2(mod(idx, SPLATS_PER_ROW) * SH_TEXELS_PER_SPLAT + coefficientGroup,
+            floor(idx / SPLATS_PER_ROW)),
+        vec2(SH_WIDTH, resolve_info.sh_height));
 }
 
 vec4 unpackSH(vec4 packed) {
@@ -110,7 +118,7 @@ void main() {
     // One fragment per splat: gl_FragCoord maps to the color-sidecar layout.
     float col = floor(gl_FragCoord.x);
     float row = floor(gl_FragCoord.y);
-    float idx = row * 512.0 + col;
+    float idx = row * SPLATS_PER_ROW + col;
 
     if (idx >= resolve_info.splat_count) {
         fragColor = vec4(0.0);

@@ -30,34 +30,45 @@ in vec3 position;
 out vec4 vColor;
 out vec2 vPosition;
 
+// Texture layout constants — must match GsConst.splatsPerRow
+// (lib/constants.dart) and the packing in
+// lib/renderer/gpu/gpu_splat_source.dart, and stay in sync with
+// sh_resolve.frag.
+const float SPLATS_PER_ROW = 512.0;
+const float FLOAT_TEXELS_PER_SPLAT = 2.0;
+const float ATLAS_WIDTH = SPLATS_PER_ROW * FLOAT_TEXELS_PER_SPLAT;
+const float SH_TEXELS_PER_SPLAT = 12.0;
+const float SH_WIDTH = SPLATS_PER_ROW * SH_TEXELS_PER_SPLAT;
+
 vec4 fetchTexel(sampler2D source, vec2 texel, vec2 size) {
     return texture(source, (texel + vec2(0.5)) / size);
 }
 
 vec4 fetchAtlas(float idx, float offset) {
-    float col = mod(idx, 512.0);
-    float row = floor(idx / 512.0);
+    float col = mod(idx, SPLATS_PER_ROW);
+    float row = floor(idx / SPLATS_PER_ROW);
     return fetchTexel(
         u_texture,
-        vec2(col * 2.0 + offset, row),
-        vec2(1024.0, frame_info.atlas_height));
+        vec2(col * FLOAT_TEXELS_PER_SPLAT + offset, row),
+        vec2(ATLAS_WIDTH, frame_info.atlas_height));
 }
 
 vec4 fetchSidecar(sampler2D source, float idx) {
     return fetchTexel(
         source,
-        vec2(mod(idx, 512.0), floor(idx / 512.0)),
-        vec2(512.0, frame_info.sidecar_height));
+        vec2(mod(idx, SPLATS_PER_ROW), floor(idx / SPLATS_PER_ROW)),
+        vec2(SPLATS_PER_ROW, frame_info.sidecar_height));
 }
 
 vec4 fetchSH(float idx, float coefficientGroup) {
-    // 6144-wide layout: 12 adjacent texels per splat, 512 splats per row, so
-    // the height matches the other sidecars (a 512-wide linear layout grows
-    // 12x taller and exceeds the 16384 texture dimension cap at ~700K splats).
+    // 12 adjacent texels per splat, 512 splats per row, so the height matches
+    // the other sidecars (a 512-wide linear layout grows 12x taller and
+    // exceeds the 16384 texture dimension cap at ~700K splats).
     return fetchTexel(
         u_sh_texture,
-        vec2(mod(idx, 512.0) * 12.0 + coefficientGroup, floor(idx / 512.0)),
-        vec2(6144.0, frame_info.sh_height));
+        vec2(mod(idx, SPLATS_PER_ROW) * SH_TEXELS_PER_SPLAT + coefficientGroup,
+            floor(idx / SPLATS_PER_ROW)),
+        vec2(SH_WIDTH, frame_info.sh_height));
 }
 
 float decodeOrder(vec4 orderTexel) {
@@ -169,8 +180,8 @@ void main() {
 
     vec4 orderTexel = fetchTexel(
         u_order_texture,
-        vec2(mod(orderIdx, 512.0), floor(orderIdx / 512.0)),
-        vec2(512.0, frame_info.order_height));
+        vec2(mod(orderIdx, SPLATS_PER_ROW), floor(orderIdx / SPLATS_PER_ROW)),
+        vec2(SPLATS_PER_ROW, frame_info.order_height));
     float idx = decodeOrder(orderTexel);
 
     if (idx >= frame_info.splat_count) {

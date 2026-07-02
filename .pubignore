@@ -1,0 +1,39 @@
+# NOTE: a .pubignore REPLACES .gitignore for pub in this directory, so the
+# relevant .gitignore rules are repeated here.
+
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+.mason/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Files and directories created by pub
+.dart_tool/
+.packages
+build/
+pubspec.lock
+pubspec_overrides.yaml
+.flutter-plugins
+.flutter-plugins-dependencies
+shaders/reference_vertex.glsl
+reference/
+.vscode/
+
+# Keep the published archive small: heavy media stays in the git repo only.
+# pub.dev renders README images via the repository URL, and example users
+# supply their own .ply model (see README).
+doc/
+example/assets/

@@ -1,4 +1,4 @@
-## 0.4.0 - 2026-07-02
+## 0.4.0-dev.1 - 2026-07-02
 
 ### 💥 Breaking Changes
 * **BREAKING**: The ANGLE/OpenGL rendering backend has been removed. The package now renders exclusively through Flutter GPU (Impeller).
